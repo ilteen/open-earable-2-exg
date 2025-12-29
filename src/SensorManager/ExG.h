@@ -20,7 +20,7 @@ public:
     void start(int sample_rate_idx) override;
     void stop() override;
 
-    const static SampleRateSetting<8> sample_rates;
+    const static SampleRateSetting<9> sample_rates;
 
 private:
     static AD7124 *adc;
