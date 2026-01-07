@@ -105,6 +105,7 @@ void ExG::update_sensor(struct k_work* work) {
     float voltage_volts = adc->readVolts(0);
     float voltage_microvolts = (voltage_volts / INAMP_GAIN) * 1e6f;
 
+    msg_exg.sd = sensor._sd_logging;
     msg_exg.stream = sensor._ble_stream;
 
     msg_exg.data.id = ID_EXG;

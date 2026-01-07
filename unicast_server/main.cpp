@@ -141,10 +141,15 @@ int main(void) {
         .storageOptions = DATA_STORAGE};
 
     config_sensor(&exg);
+    k_msleep(100);
     config_sensor(&imu);
+    k_msleep(100);
     config_sensor(&ppg_right);
+    k_msleep(100);
     config_sensor(&ppg_left);
+    k_msleep(100);
     config_sensor(&temp_right);
+    k_msleep(100);
     config_sensor(&temp_left);
 
     LOG_INF("Sensors auto-started: ExG@200Hz, IMU@200Hz, PPG@200Hz, Temp@1Hz");
