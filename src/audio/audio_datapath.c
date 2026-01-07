@@ -209,6 +209,7 @@ static void data_thread(void *arg1, void *arg2, void *arg3)
     while (1) {
         // Daten aus der data_queue lesen
         for (int i = 0; i < CONFIG_FIFO_FRAME_SPLIT_NUM; i++) {
+			// wait for next sample block to be available
             ret = data_fifo_pointer_last_filled_get(ctrl_blk.in.fifo, &tmp_pcm_raw_data[i], &pcm_block_size, K_FOREVER);
             ERR_CHK(ret);
 
@@ -229,6 +230,7 @@ static void data_thread(void *arg1, void *arg2, void *arg3)
 	
 				audio_msg.data.id = ID_MICRO;
 				audio_msg.data.size = BLOCK_SIZE_BYTES; // SENQUEUE_FRAME_SIZE;
+				audio_msg.data.time = time_stamp;
 
 				/*k_mutex_lock(&write_mutex, K_FOREVER);
 
@@ -753,6 +755,11 @@ static void alt_buffer_free_both(void)
 	alt.buf_1_in_use = false;
 }
 
+__attribute__((weak)) void bt_mgmt_report_audio_underrun(uint32_t count) {
+	LOG_ERR("Audio underrun reported to bt_mgmt");
+}
+
+
 /*
  * This handler function is called every time I2S needs new buffers for
  * TX and RX data.
@@ -790,6 +797,7 @@ static void audio_datapath_i2s_blk_complete(uint32_t frame_start_ts_us, uint32_t
 					underrun_condition = false;
 					LOG_WRN("Data received, total under-runs: %d",
 						ctrl_blk.out.total_blk_underruns);
+					bt_mgmt_report_audio_underrun(ctrl_blk.out.total_blk_underruns);
 				}
 
 				tx_buf = (uint8_t *)&ctrl_blk.out

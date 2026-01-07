@@ -4,43 +4,57 @@
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
+#include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
-#include <zephyr/kernel.h>
+#include <zephyr/usb/usb_device.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_uart.h>
-#include <zephyr/usb/usb_device.h>
 
-// #include "../src/modules/sd_card.h"
+//#include "../src/modules/sd_card.h"
 
 #include <zephyr/settings/settings.h>
 
-#include "../src/Battery/PowerManager.h"
-#include "../src/SD_Card/SDLogger/SDLogger.h"
-#include "../src/SensorManager/SensorManager.h"
-#include "../src/utils/StateIndicator.h"
-#include "DefaultSensors.h"
-#include "SensorScheme.h"
-#include "battery_service.h"
-#include "bt_mgmt.h"
-#include "button_service.h"
-#include "device_info.h"
-#include "led_service.h"
 #include "macros_common.h"
 #include "openearable_common.h"
-#include "sensor_service.h"
 #include "streamctrl.h"
+
+#include "../src/Battery/PowerManager.h"
+#include "../src/SensorManager/SensorManager.h"
+#include "../src/utils/StateIndicator.h"
+
+#include "device_info.h"
+#include "battery_service.h"
+#include "button_service.h"
+#include "sensor_service.h"
+#include "led_service.h"
+
+#include "SensorScheme.h"
+#include "DefaultSensors.h"
+
+#include "time_sync.h"
+
+#include "../src/SD_Card/SDLogger/SDLogger.h"
+
 #include "uicr.h"
 
-// #include "sd_card.h"
+#include "streamctrl.h"
+
+#include "bt_mgmt.h"
+
+#include "bt_mgmt_conn_interval.h"
+#include "conn_interval/conn_intvl_linear.h"
+
+//#include "sd_card.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
-// BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), zephyr_cdc_acm_uart),
+//BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), zephyr_cdc_acm_uart),
 //	     "Console device is not ACM CDC UART device");
 
 /* STEP 5.4 - Include header for USB */
 #include <zephyr/usb/usb_device.h>
+
 
 int main(void) {
     int ret;
@@ -104,6 +118,15 @@ int main(void) {
     ERR_CHK(ret);
 
     ret = init_sensor_service();
+    ERR_CHK(ret);
+    
+    bt_mgmt_conn_interval_init(new ConnIntvlLinear(
+                                                   4,                // linear increase step (8ms units)
+                                                   CONFIG_BLE_ACL_CONN_INTERVAL,
+                                                   CONFIG_BLE_ACL_CONN_INTERVAL_SLOW
+                                                   ));
+    
+    ret = init_time_sync();
     ERR_CHK(ret);
 
     // error test

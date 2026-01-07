@@ -1,32 +1,30 @@
 #ifndef _TEMP_LEFT_I2C3_H
 #define _TEMP_LEFT_I2C3_H
 
-#include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
+#include "TempSensor.h"
 
-#include "MLX90632/MLX90632.h"
-#include "EdgeMLSensor.h"
-
-#include "openearable_common.h"
-#include "zbus_common.h"
-
-class Temp_left_I2C3 : public EdgeMlSensor {
+/**
+ * @brief Temperature sensor on I2C3 (left ear)
+ * 
+ * This is a thin wrapper around TempSensor that provides
+ * the static instance and configuration for the left temperature sensor.
+ */
+class Temp_left_I2C3 : public TempSensor {
 public:
+    Temp_left_I2C3();
+
     static Temp_left_I2C3 sensor;
 
-    bool init(struct k_msgq * queue) override;
-    void start(int sample_rate_idx) override;
-    void stop() override;
+    bool init(struct k_msgq* queue) override;
 
-    const static SampleRateSetting<8> sample_rates;
+    // Re-export sample_rates from base class for compatibility
+    using TempSensor::sample_rates;
+
 private:
-    static MLX90632 temp;
-
-    static void sensor_timer_handler(struct k_timer *dummy);
-
-    static void update_sensor(struct k_work *work);
-
-    bool _active = false;
+    static const TempSensorConfig temp_config;
+    
+    static void sensor_timer_handler(struct k_timer* dummy);
+    static void update_sensor(struct k_work* work);
 };
 
 #endif
