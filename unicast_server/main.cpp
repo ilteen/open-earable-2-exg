@@ -55,7 +55,6 @@ LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 /* STEP 5.4 - Include header for USB */
 #include <zephyr/usb/usb_device.h>
 
-
 int main(void) {
     int ret;
 
@@ -126,57 +125,59 @@ int main(void) {
                                                    CONFIG_BLE_ACL_CONN_INTERVAL_SLOW
                                                    ));
     
+    // Register callback to start sensors after time sync
+    time_sync_register_callback([]() {
+        LOG_INF("Time synced - starting sensor recording");
+
+        sensor_config exg = {
+            .sensorId = ID_EXG,
+            .sampleRateIndex = 3,  // 200 Hz
+            .storageOptions = DATA_STORAGE};
+        
+        sensor_config imu = {
+            .sensorId = ID_IMU,
+            .sampleRateIndex = 3,  // 200 Hz
+            .storageOptions = DATA_STORAGE};
+        
+        sensor_config ppg_right = {
+            .sensorId = ID_PPG_right_I2C2,
+            .sampleRateIndex = 4,  // 200 Hz
+            .storageOptions = DATA_STORAGE};
+        
+        sensor_config ppg_left = {
+            .sensorId = ID_PPG_left_I2C3,
+            .sampleRateIndex = 4,  // 200 Hz
+            .storageOptions = DATA_STORAGE};
+
+        sensor_config temp_right = {
+            .sensorId = ID_OPTTEMP_right_I2C2,
+            .sampleRateIndex = 1,  // 1 Hz
+            .storageOptions = DATA_STORAGE};
+        
+        sensor_config temp_left = {
+            .sensorId = ID_OPTTEMP_left_I2C3,
+            .sampleRateIndex = 1,  // 1 Hz
+            .storageOptions = DATA_STORAGE};
+
+        config_sensor(&exg);
+        k_msleep(100);
+        config_sensor(&imu);
+        k_msleep(100);
+        config_sensor(&ppg_right);
+        k_msleep(100);
+        config_sensor(&ppg_left);
+        k_msleep(100);
+        config_sensor(&temp_right);
+        k_msleep(100);
+        config_sensor(&temp_left);
+
+        LOG_INF("Sensors auto-started: ExG@200Hz, IMU@200Hz, PPG@200Hz, Temp@1Hz");
+    });
+    
     ret = init_time_sync();
     ERR_CHK(ret);
 
-    // error test
-    // long *a = nullptr;
-    //*a = 10;
-
-    sensor_config exg = {
-        .sensorId = ID_EXG,
-        .sampleRateIndex = 3,  // 200 Hz
-        .storageOptions = DATA_STORAGE};
-    
-    sensor_config imu = {
-        .sensorId = ID_IMU,
-        .sampleRateIndex = 3,  // 200 Hz
-        .storageOptions = DATA_STORAGE};
-    
-    sensor_config ppg_right = {
-        .sensorId = ID_PPG_right_I2C2,
-        .sampleRateIndex = 4,  // 200 Hz
-        .storageOptions = DATA_STORAGE};
-    
-    sensor_config ppg_left = {
-        .sensorId = ID_PPG_left_I2C3,
-        .sampleRateIndex = 4,  // 200 Hz
-        .storageOptions = DATA_STORAGE};
-
-    sensor_config temp_right = {
-        .sensorId = ID_OPTTEMP_right_I2C2,
-        .sampleRateIndex = 1,  // 1 Hz
-        .storageOptions = DATA_STORAGE};
-    
-    sensor_config temp_left = {
-        .sensorId = ID_OPTTEMP_left_I2C3,
-        .sampleRateIndex = 1,  // 1 Hz
-        .storageOptions = DATA_STORAGE};
-
-    config_sensor(&exg);
-    k_msleep(100);
-    config_sensor(&imu);
-    k_msleep(100);
-    config_sensor(&ppg_right);
-    k_msleep(100);
-    config_sensor(&ppg_left);
-    k_msleep(100);
-    config_sensor(&temp_right);
-    k_msleep(100);
-    config_sensor(&temp_left);
-
-    LOG_INF("Sensors auto-started: ExG@200Hz, IMU@200Hz, PPG@200Hz, Temp@1Hz");
-
+    LOG_INF("Waiting for time sync before starting sensor recording...");
 
     return 0;
 }

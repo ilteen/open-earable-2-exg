@@ -40,6 +40,8 @@ struct __packed time_sync_packet {
 };
 
 int64_t time_offset_us = 0;
+static bool time_synced = false;
+static time_sync_callback_t time_sync_callback = NULL;
 
 bool notify_rtt_enabled = false;
 
@@ -139,7 +141,20 @@ static ssize_t write_time_offset(
     time_offset_us += delta;
     LOG_DBG("Received time offset update: %lld us, new time offset: %lld us", delta, time_offset_us);
 
+    // Check if this is the first time sync
+    if (!time_synced) {
+        time_synced = true;
+        LOG_INF("Time synchronized for the first time");
+        if (time_sync_callback != NULL) {
+            time_sync_callback();
+        }
+    }
+
     return len;
+}
+
+void time_sync_register_callback(time_sync_callback_t callback) {
+    time_sync_callback = callback;
 }
 
 bool can_sync_time() {
