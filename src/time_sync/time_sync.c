@@ -11,6 +11,9 @@
 
 #include "openearable_common.h"
 
+// External reference to sensor work queue (defined in SensorManager.cpp)
+extern struct k_work_q sensor_work_q;
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(time_sync, LOG_LEVEL_DBG);
 
@@ -42,6 +45,15 @@ struct __packed time_sync_packet {
 int64_t time_offset_us = 0;
 static bool time_synced = false;
 static time_sync_callback_t time_sync_callback = NULL;
+
+// Work item for deferred callback execution
+static struct k_work time_sync_work;
+
+static void time_sync_work_handler(struct k_work *work) {
+    if (time_sync_callback != NULL) {
+        time_sync_callback();
+    }
+}
 
 bool notify_rtt_enabled = false;
 
@@ -146,7 +158,8 @@ static ssize_t write_time_offset(
         time_synced = true;
         LOG_INF("Time synchronized for the first time");
         if (time_sync_callback != NULL) {
-            time_sync_callback();
+            // Submit to sensor work queue (not system work queue) to avoid blocking
+            k_work_submit_to_queue(&sensor_work_q, &time_sync_work);
         }
     }
 
@@ -163,7 +176,7 @@ bool can_sync_time() {
 }
 
 int init_time_sync(void) {
-	
+	k_work_init(&time_sync_work, time_sync_work_handler);
 	return 0;
 }
 

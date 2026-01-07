@@ -217,16 +217,7 @@ static void config_work_handler(struct k_work *work) {
 	sensor->sd_logging(config.storageOptions & DATA_STORAGE);
 	sensor->ble_stream(config.storageOptions & DATA_STREAMING);
 
-	if (config.storageOptions & (DATA_STORAGE | DATA_STREAMING)) {
-		if (sensor->init(&sensor_queue)) {
-			if (active_sensors == 0) start_sensor_manager();
-			sensor->start(config.sampleRateIndex);
-			if (sensor->is_running()) {
-				active_sensors++;
-			}
-		}
-	}
-
+	// Start SDLogger BEFORE starting the sensor to avoid losing initial data
 	if (config.storageOptions & DATA_STORAGE) {
 		sd_sensors.insert(config.sensorId);
 
@@ -238,7 +229,19 @@ static void config_work_handler(struct k_work *work) {
 			int ret = sdlogger.begin(filename);
 			if (ret == 0) state_indicator.set_sd_state(SD_RECORDING);
 		}
-	} else if (sd_sensors.find(config.sensorId) != sd_sensors.end()) {
+	}
+
+	if (config.storageOptions & (DATA_STORAGE | DATA_STREAMING)) {
+		if (sensor->init(&sensor_queue)) {
+			if (active_sensors == 0) start_sensor_manager();
+			sensor->start(config.sampleRateIndex);
+			if (sensor->is_running()) {
+				active_sensors++;
+			}
+		}
+	}
+
+	if (!(config.storageOptions & DATA_STORAGE) && sd_sensors.find(config.sensorId) != sd_sensors.end()) {
 		sd_sensors.erase(config.sensorId);
 
 		if (sd_sensors.empty()) {
