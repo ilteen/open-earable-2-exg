@@ -1,0 +1,15 @@
+# requirements.txt - Dependencies for OpenEarable Tools
+# Install with: pip install -r requirements.txt
+
+# GUI Framework
+PyQt6>=6.4.0
+
+# BLE Communication
+bleak>=0.21.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Build Tools (for creating executables)
+pyinstaller>=6.0.0
