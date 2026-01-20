@@ -13,6 +13,9 @@ Features:
 - Export to CSV format
 """
 
+# Debug mode - set to True to show debug console in USB tab
+DEBUG = False
+
 import asyncio
 import os
 import struct
@@ -21,7 +24,8 @@ import threading
 import time
 from collections import defaultdict
 from typing import Optional
-
+import pandas as pd
+import numpy as np
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
@@ -32,7 +36,7 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QTableWidget, QTableWidgetItem, QProgressBar,
         QMessageBox, QHeaderView, QGroupBox, QTabWidget, QFileDialog,
-        QListWidget, QTextEdit, QSplitter, QCheckBox
+        QListWidget, QTextEdit, QCheckBox
     )
     from PyQt6.QtGui import QTextCursor, QFont
     QT_BACKEND = "PyQt6"
@@ -43,7 +47,7 @@ except ImportError:
             QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
             QPushButton, QLabel, QTableWidget, QTableWidgetItem, QProgressBar,
             QMessageBox, QHeaderView, QGroupBox, QTabWidget, QFileDialog,
-            QListWidget, QTextEdit, QSplitter, QCheckBox
+            QListWidget, QTextEdit, QCheckBox
         )
         from PySide6.QtGui import QTextCursor, QFont
         QT_BACKEND = "PySide6"
@@ -53,9 +57,6 @@ except ImportError:
         print("  pip install PyQt6")
         print("  pip install PySide6  (recommended for Windows)")
         sys.exit(1)
-
-import pandas as pd
-import numpy as np
 
 # Try to import serial, but make it optional
 try:
@@ -536,7 +537,7 @@ class TimeSyncTab(QWidget):
         self.refresh_btn.clicked.connect(self.start_scan)
         btn_layout.addWidget(self.refresh_btn)
 
-        self.sync_btn = QPushButton("⏱ Sync Time")
+        self.sync_btn = QPushButton("⏱ Sync Time and Start Recording")
         self.sync_btn.clicked.connect(self.start_sync)
         btn_layout.addWidget(self.sync_btn)
 
@@ -648,109 +649,93 @@ class USBTimeSyncTab(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        # Create splitter for port list and debug console
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        # Top part: Port selection
-        top_widget = QWidget()
-        top_layout = QVBoxLayout(top_widget)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Port list group
-        group = QGroupBox("USB Serial Ports")
+        # Device list group
+        group = QGroupBox("Found Devices")
         group_layout = QVBoxLayout(group)
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Port", "Description", "Hardware ID"])
+        self.table.setHorizontalHeaderLabels(["Port", "Name", "Hardware ID"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setMaximumHeight(120)
         group_layout.addWidget(self.table)
-        top_layout.addWidget(group)
 
-        # Status and buttons row
-        status_btn_layout = QHBoxLayout()
-        
+        layout.addWidget(group)
+
+        # Status label
         self.status_label = QLabel("Click Refresh to scan for USB ports...")
         self.status_label.setStyleSheet("color: gray;")
-        status_btn_layout.addWidget(self.status_label, stretch=1)
-        
+        layout.addWidget(self.status_label)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
         self.refresh_btn = QPushButton("🔄 Refresh")
         self.refresh_btn.clicked.connect(self.refresh_ports)
-        status_btn_layout.addWidget(self.refresh_btn)
+        btn_layout.addWidget(self.refresh_btn)
 
-        self.sync_btn = QPushButton("⏱ Sync Time (USB)")
+        self.sync_btn = QPushButton("⏱ Sync Time and Start Recording")
         self.sync_btn.clicked.connect(self.start_sync)
-        status_btn_layout.addWidget(self.sync_btn)
-        
-        top_layout.addLayout(status_btn_layout)
+        btn_layout.addWidget(self.sync_btn)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
 
         # Progress bar
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        top_layout.addWidget(self.progress)
-        
-        splitter.addWidget(top_widget)
-        
-        # Bottom part: Debug console
-        debug_widget = QWidget()
-        debug_layout = QVBoxLayout(debug_widget)
-        debug_layout.setContentsMargins(0, 0, 0, 0)
-        
-        debug_header = QHBoxLayout()
-        debug_label = QLabel("🔧 Debug Console")
-        debug_label.setStyleSheet("font-weight: bold;")
-        debug_header.addWidget(debug_label)
-        
-        self.auto_scroll_cb = QCheckBox("Auto-scroll")
-        self.auto_scroll_cb.setChecked(True)
-        debug_header.addWidget(self.auto_scroll_cb)
-        
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self._clear_debug)
-        debug_header.addWidget(self.clear_btn)
-        
-        debug_header.addStretch()
-        debug_layout.addLayout(debug_header)
-        
-        self.debug_console = QTextEdit()
-        self.debug_console.setReadOnly(True)
-        self.debug_console.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10))
-        self.debug_console.setStyleSheet("""
-            QTextEdit {
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                border: 1px solid #3c3c3c;
-            }
-        """)
-        debug_layout.addWidget(self.debug_console)
-        
-        splitter.addWidget(debug_widget)
-        
-        # Set initial splitter sizes (60% top, 40% bottom)
-        splitter.setSizes([300, 200])
-        
-        layout.addWidget(splitter)
+        layout.addWidget(self.progress)
+
+        # Debug console (only shown if DEBUG is True)
+        if DEBUG:
+            debug_group = QGroupBox("🔧 Debug Console")
+            debug_layout = QVBoxLayout(debug_group)
+            
+            debug_header = QHBoxLayout()
+            
+            self.auto_scroll_cb = QCheckBox("Auto-scroll")
+            self.auto_scroll_cb.setChecked(True)
+            debug_header.addWidget(self.auto_scroll_cb)
+            
+            self.clear_btn = QPushButton("Clear")
+            self.clear_btn.clicked.connect(self._clear_debug)
+            debug_header.addWidget(self.clear_btn)
+            
+            debug_header.addStretch()
+            debug_layout.addLayout(debug_header)
+            
+            self.debug_console = QTextEdit()
+            self.debug_console.setReadOnly(True)
+            self.debug_console.setFont(QFont("Menlo" if sys.platform == "darwin" else "Consolas", 10))
+            self.debug_console.setStyleSheet("""
+                QTextEdit {
+                    background-color: #1e1e1e;
+                    color: #d4d4d4;
+                    border: 1px solid #3c3c3c;
+                }
+            """)
+            self.debug_console.setMaximumHeight(150)
+            debug_layout.addWidget(self.debug_console)
+            
+            layout.addWidget(debug_group)
 
         # Info box at bottom
         if not SERIAL_AVAILABLE:
             info = QLabel("⚠️ pyserial not installed. Run: pip install pyserial")
-            info.setStyleSheet("color: #ff6b6b; font-size: 12px; padding: 5px;")
-        else:
-            info = QLabel("💡 USB sync is faster and more accurate than Bluetooth (~1ms vs ~10ms).\n"
-                          "Connect OpenEarable via USB cable and select the port.")
-            info.setStyleSheet("color: #666; font-size: 11px;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
+            info.setStyleSheet("color: #ff6b6b; font-size: 12px; padding: 5px;")    
+            info.setWordWrap(True)
+            layout.addWidget(info)
 
     def _append_debug(self, msg: str):
         """Append message to debug console (thread-safe via signal)."""
+        if not DEBUG or not hasattr(self, 'debug_console'):
+            return
         self.debug_console.append(msg)
         if self.auto_scroll_cb.isChecked():
             cursor = self.debug_console.textCursor()
@@ -759,7 +744,8 @@ class USBTimeSyncTab(QWidget):
 
     def _clear_debug(self):
         """Clear the debug console."""
-        self.debug_console.clear()
+        if DEBUG and hasattr(self, 'debug_console'):
+            self.debug_console.clear()
 
     def refresh_ports(self):
         """Scan for USB serial ports."""
@@ -1061,10 +1047,10 @@ class OpenEarableToolApp(QMainWindow):
         self.tabs = QTabWidget()
         
         self.time_sync_tab = TimeSyncTab(self.signals)
-        self.tabs.addTab(self.time_sync_tab, "📶 BLE Time Sync")
+        self.tabs.addTab(self.time_sync_tab, "🛜 Bluetooth Time Sync")
 
         self.usb_sync_tab = USBTimeSyncTab(self.signals)
-        self.tabs.addTab(self.usb_sync_tab, "🔌 USB Time Sync")
+        self.tabs.addTab(self.usb_sync_tab, "🖥️ USB Time Sync")
 
         self.file_tab = FileConverterTab(self.signals)
         self.tabs.addTab(self.file_tab, "📂 File Converter")
