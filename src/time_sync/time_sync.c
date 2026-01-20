@@ -1,4 +1,5 @@
 #include "time_sync.h"
+#include "usb_time_sync.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gatt.h>
@@ -42,7 +43,7 @@ struct __packed time_sync_packet {
     uint64_t t3_dev_tx;     // device transmit time
 };
 
-int64_t time_offset_us = 0;
+static int64_t time_offset_us = 0;
 static bool time_synced = false;
 static time_sync_callback_t time_sync_callback = NULL;
 
@@ -150,24 +151,35 @@ static ssize_t write_time_offset(
 
     int64_t delta;
     memcpy(&delta, buf, sizeof(delta));
-    time_offset_us += delta;
-    LOG_DBG("Received time offset update: %lld us, new time offset: %lld us", delta, time_offset_us);
-
-    // Check if this is the first time sync
-    if (!time_synced) {
-        time_synced = true;
-        LOG_INF("Time synchronized for the first time");
-        if (time_sync_callback != NULL) {
-            // Submit to sensor work queue (not system work queue) to avoid blocking
-            k_work_submit_to_queue(&sensor_work_q, &time_sync_work);
-        }
-    }
+    time_sync_apply_offset(delta);
 
     return len;
 }
 
 void time_sync_register_callback(time_sync_callback_t callback) {
     time_sync_callback = callback;
+}
+
+static void notify_synced(void) {
+    if (!time_synced) {
+        time_synced = true;
+        LOG_INF("Time synchronized");
+        if (time_sync_callback != NULL) {
+            k_work_submit_to_queue(&sensor_work_q, &time_sync_work);
+        }
+    }
+}
+
+void time_sync_set_offset(int64_t offset_us) {
+    time_offset_us = offset_us;
+    LOG_DBG("Time offset set to: %lld us", time_offset_us);
+    notify_synced();
+}
+
+void time_sync_apply_offset(int64_t delta_us) {
+    time_offset_us += delta_us;
+    LOG_DBG("Time offset adjusted by %lld us, new offset: %lld us", delta_us, time_offset_us);
+    notify_synced();
 }
 
 bool can_sync_time() {
@@ -177,6 +189,10 @@ bool can_sync_time() {
 
 int init_time_sync(void) {
 	k_work_init(&time_sync_work, time_sync_work_handler);
+	
+	// Initialize USB time sync
+	usb_time_sync_init();
+	
 	return 0;
 }
 
