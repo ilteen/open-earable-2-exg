@@ -19,6 +19,8 @@
 
 #include "openearable_common.h"
 #include "StateIndicator.h"
+#include <ctime>
+#include <cstdio>
 
 #include <SensorScheme.h>
 #include "../SD_Card/SDLogger/SDLogger.h"
@@ -225,7 +227,25 @@ static void config_work_handler(struct k_work *work) {
 			const char *recording_name_prefix = get_sensor_recording_name();
 			LOG_INF("Starting SDLogger with recording name prefix: %s", recording_name_prefix);
 			// Start SDLogger with timestamp-based filename
-			std::string filename = recording_name_prefix + std::to_string(micros());
+			// Interpret micros() as unix timestamp in microseconds and format to DD_MM_YYYY_HH_MM_SS
+			uint64_t micros_ts = micros();
+			time_t seconds = (time_t)(micros_ts / 1000000ULL);
+			struct tm tm_buf;
+			struct tm *tm_ptr = gmtime_r(&seconds, &tm_buf);
+			char timestr[64] = {0};
+			if (tm_ptr) {
+				snprintf(timestr, sizeof(timestr), "%02d-%02d-%04d_%02d-%02d-%02d",
+						 tm_ptr->tm_mday,
+						 tm_ptr->tm_mon + 1,
+						 tm_ptr->tm_year + 1900,
+						 tm_ptr->tm_hour,
+						 tm_ptr->tm_min,
+						 tm_ptr->tm_sec);
+			} else {
+				snprintf(timestr, sizeof(timestr), "%llu", (unsigned long long)seconds);
+			}
+
+			std::string filename = std::string(recording_name_prefix) + timestr;
 			int ret = sdlogger.begin(filename);
 			if (ret == 0) state_indicator.set_sd_state(SD_RECORDING);
 		}

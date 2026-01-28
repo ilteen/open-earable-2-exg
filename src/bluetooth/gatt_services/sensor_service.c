@@ -32,7 +32,7 @@ static bool notify_enabled = false;
 static bool sensor_config_status_ntfy_enabled = false;
 
 void set_sensor_recording_name(const char *name);
-static char sensor_recording_name[MAX_SENSOR_REC_NAME_LENGTH] = "sensor_log_";
+static char sensor_recording_name[MAX_SENSOR_REC_NAME_LENGTH] = "recording_";
 
 static struct sensor_config *active_sensor_configs;
 static size_t active_sensor_configs_size = 0;
