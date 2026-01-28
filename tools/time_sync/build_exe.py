@@ -39,10 +39,22 @@ def check_pyinstaller():
         return False
 
 
+import shutil
+
+
 def install_pyinstaller():
     """Install PyInstaller."""
     print("Installing PyInstaller...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+
+
+def clean_build_dirs(script_dir):
+    """Clean build and dist directories to avoid symlink conflicts."""
+    for dirname in ["build", "dist"]:
+        dirpath = os.path.join(script_dir, dirname)
+        if os.path.exists(dirpath):
+            print(f"Removing {dirname}/ directory...")
+            shutil.rmtree(dirpath)
 
 
 def build_app():
@@ -50,14 +62,18 @@ def build_app():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     script_path = os.path.join(script_dir, SCRIPT_NAME)
     spec_path = os.path.join(script_dir, SPEC_FILE)
+    spec_path_windows = os.path.join(script_dir, "OpenEarableTools_windows.spec")
     
     if not os.path.exists(script_path):
         print(f"Error: {SCRIPT_NAME} not found!")
         return False
     
+    # Clean build directories to avoid symlink conflicts on macOS
+    clean_build_dirs(script_dir)
+    
     system = platform.system()
     
-    # On macOS, use the spec file if available (includes Bluetooth permissions)
+    # Use platform-specific spec file if available
     if system == "Darwin" and os.path.exists(spec_path):
         print("Building for macOS (.app) using spec file...")
         args = [
@@ -65,6 +81,14 @@ def build_app():
             "--clean",
             "--noconfirm",
             spec_path
+        ]
+    elif system == "Windows" and os.path.exists(spec_path_windows):
+        print("Building for Windows (.exe) using spec file...")
+        args = [
+            sys.executable, "-m", "PyInstaller",
+            "--clean",
+            "--noconfirm",
+            spec_path_windows
         ]
     else:
         # Base PyInstaller arguments for Windows/Linux or fallback
@@ -84,6 +108,9 @@ def build_app():
             "--hidden-import", "PyQt6.QtCore",
             "--hidden-import", "PyQt6.QtGui",
             "--hidden-import", "PyQt6.QtWidgets",
+            # Hidden imports for XML parsing (needed on Windows)
+            "--hidden-import", "xml.parsers.expat",
+            "--collect-submodules", "xml",
             # Collect all bleak data files
             "--collect-data", "bleak",
             # Collect ALL PyQt6 files (critical for Windows DLL loading)
@@ -93,11 +120,9 @@ def build_app():
             "--exclude-module", "torchvision", 
             "--exclude-module", "tensorflow",
             "--exclude-module", "scipy",
-            "--exclude-module", "matplotlib",
             "--exclude-module", "IPython",
-            "--exclude-module", "jupyter",
+            "--exclude-module", "jupyter", 
             "--exclude-module", "notebook",
-            "--exclude-module", "PIL",
             "--exclude-module", "sympy",
             "--exclude-module", "PyQt5",
             "--exclude-module", "PySide2",

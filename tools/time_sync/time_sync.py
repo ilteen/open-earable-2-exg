@@ -26,30 +26,34 @@ from collections import defaultdict
 from typing import Optional
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for embedding
+import matplotlib.pyplot as plt
+from io import BytesIO
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
 # Try PyQt6 first, fall back to PySide6 (better Windows compatibility)
 try:
-    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QByteArray
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QTableWidget, QTableWidgetItem, QProgressBar,
         QMessageBox, QHeaderView, QGroupBox, QTabWidget, QFileDialog,
-        QListWidget, QTextEdit, QCheckBox
+        QListWidget, QTextEdit, QCheckBox, QScrollArea, QSplitter
     )
-    from PyQt6.QtGui import QTextCursor, QFont
+    from PyQt6.QtGui import QTextCursor, QFont, QPixmap
     QT_BACKEND = "PyQt6"
 except ImportError:
     try:
-        from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject
+        from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QByteArray
         from PySide6.QtWidgets import (
             QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
             QPushButton, QLabel, QTableWidget, QTableWidgetItem, QProgressBar,
             QMessageBox, QHeaderView, QGroupBox, QTabWidget, QFileDialog,
-            QListWidget, QTextEdit, QCheckBox
+            QListWidget, QTextEdit, QCheckBox, QScrollArea, QSplitter
         )
-        from PySide6.QtGui import QTextCursor, QFont
+        from PySide6.QtGui import QTextCursor, QFont, QPixmap
         QT_BACKEND = "PySide6"
     except ImportError:
         print("Error: Neither PyQt6 nor PySide6 is installed.")
@@ -102,10 +106,61 @@ def compute_median(values: list[int]) -> int:
     return (sorted_vals[mid - 1] + sorted_vals[mid]) // 2
 
 
-async def scan_devices(timeout: float = 5.0) -> list[BLEDevice]:
-    devices = await BleakScanner.discover(timeout=timeout)
-    openearable = [d for d in devices if d.name and "OpenEarable" in d.name]
-    return sorted(openearable, key=lambda d: -(d.rssi or -100))
+async def scan_devices(timeout: float = 5.0) -> tuple[list[BLEDevice], int]:
+    """Scan for OpenEarable BLE devices.
+    
+    On macOS, this requires Bluetooth permission. If running as a bundled .app,
+    the Info.plist must include NSBluetoothAlwaysUsageDescription.
+    
+    Scans by both device name and the Time Sync service UUID to maximize discovery.
+    
+    Returns:
+        (list of OpenEarable devices, total devices scanned)
+    """
+    try:
+        devices_found = {}
+        all_devices_count = 0
+        seen_addresses = set()
+        
+        def detection_callback(device: BLEDevice, advertisement_data):
+            nonlocal all_devices_count
+            
+            # Count unique devices
+            if device.address not in seen_addresses:
+                seen_addresses.add(device.address)
+                all_devices_count = len(seen_addresses)
+            
+            # Get name from device or advertisement data
+            name = device.name or advertisement_data.local_name
+            
+            # Check if this is an OpenEarable device
+            is_openearable = False
+            
+            # Match by name
+            if name and "OpenEarable" in name:
+                is_openearable = True
+            
+            # Also match by Time Sync service UUID (in case name is not advertised)
+            service_uuids = [str(s).lower() for s in advertisement_data.service_uuids]
+            if TIME_SYNC_SERVICE_UUID.lower() in service_uuids:
+                is_openearable = True
+            
+            if is_openearable:
+                # Store/update device (keep the one with best RSSI or with name)
+                addr = device.address
+                if addr not in devices_found or name:
+                    devices_found[addr] = device
+        
+        scanner = BleakScanner(detection_callback=detection_callback)
+        await scanner.start()
+        await asyncio.sleep(timeout)
+        await scanner.stop()
+        
+        devices_list = list(devices_found.values())
+        return sorted(devices_list, key=lambda d: -(d.rssi or -100)), all_devices_count
+    except Exception as e:
+        # Re-raise with more context for debugging
+        raise RuntimeError(f"BLE scan failed: {e}. Make sure Bluetooth is enabled and the app has permission to use it.") from e
 
 
 async def sync_time(device: BLEDevice, progress_callback=None) -> tuple[bool, str]:
@@ -486,7 +541,7 @@ def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
 # =============================================================================
 
 class WorkerSignals(QObject):
-    scan_complete = pyqtSignal(list)
+    scan_complete = pyqtSignal(object)  # (list[BLEDevice], int) tuple
     scan_error = pyqtSignal(str)
     sync_complete = pyqtSignal(bool, str)
     progress = pyqtSignal(str)
@@ -564,12 +619,13 @@ class TimeSyncTab(QWidget):
 
     def _scan_thread(self):
         try:
-            devices = self.loop.run_until_complete(scan_devices(timeout=5.0))
-            self.signals.scan_complete.emit(devices)
+            devices, total_scanned = self.loop.run_until_complete(scan_devices(timeout=7.0))
+            self.signals.scan_complete.emit((devices, total_scanned))
         except Exception as e:
             self.signals.scan_error.emit(str(e))
 
-    def on_scan_complete(self, devices: list[BLEDevice]):
+    def on_scan_complete(self, result):
+        devices, total_scanned = result
         self.devices = devices
         self.set_buttons_enabled(True)
 
@@ -580,10 +636,10 @@ class TimeSyncTab(QWidget):
             self.table.setItem(i, 2, QTableWidgetItem(device.address))
 
         if devices:
-            self.status_label.setText(f"Found {len(devices)} device(s). Select one and click Sync.")
+            self.status_label.setText(f"Found {len(devices)} OpenEarable device(s). Select one and click Sync.")
             self.table.selectRow(0)
         else:
-            self.status_label.setText("No OpenEarable devices found. Click Refresh to scan again.")
+            self.status_label.setText(f"No OpenEarable found (scanned {total_scanned} BLE devices). Make sure device is on and advertising.")
 
     def on_scan_error(self, error: str):
         self.set_buttons_enabled(True)
@@ -850,30 +906,29 @@ class FileConverterTab(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        # File list group
+        # Create splitter for file list (top) and preview (bottom)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # Top part: File list and buttons
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+
+        # File list group (compact)
         group = QGroupBox("Loaded .oe Files")
         group_layout = QVBoxLayout(group)
 
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.file_list.setMaximumHeight(100)
         group_layout.addWidget(self.file_list)
-
-        layout.addWidget(group)
-
-        # Info display
-        info_group = QGroupBox("File Info")
-        info_layout = QVBoxLayout(info_group)
-        self.info_text = QTextEdit()
-        self.info_text.setReadOnly(True)
-        self.info_text.setMaximumHeight(120)
-        info_layout.addWidget(self.info_text)
-        layout.addWidget(info_group)
+        top_layout.addWidget(group)
 
         # Status label
         self.status_label = QLabel("Import .oe files to convert to CSV")
         self.status_label.setStyleSheet("color: gray;")
-        layout.addWidget(self.status_label)
+        top_layout.addWidget(self.status_label)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -894,32 +949,152 @@ class FileConverterTab(QWidget):
         btn_layout.addWidget(self.clear_btn)
 
         btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        top_layout.addLayout(btn_layout)
 
         # Progress bar
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        top_layout.addWidget(self.progress)
+
+        splitter.addWidget(top_widget)
+
+        # Bottom part: File preview with plots (in scroll area)
+        self.preview_group = QGroupBox("File Preview")
+        preview_layout = QVBoxLayout(self.preview_group)
+        
+        # Scroll area for plots
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        self.preview_content = QWidget()
+        self.preview_layout = QVBoxLayout(self.preview_content)
+        self.preview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        # Placeholder label
+        self.preview_placeholder = QLabel("Select a file to see preview")
+        self.preview_placeholder.setStyleSheet("color: gray; padding: 20px;")
+        self.preview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_layout.addWidget(self.preview_placeholder)
+        
+        scroll.setWidget(self.preview_content)
+        preview_layout.addWidget(scroll)
+        
+        splitter.addWidget(self.preview_group)
+        
+        # Set splitter sizes (30% top, 70% bottom for preview)
+        splitter.setSizes([150, 350])
+        
+        layout.addWidget(splitter)
+
+    def _clear_preview(self):
+        """Clear all widgets from preview layout."""
+        while self.preview_layout.count():
+            item = self.preview_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _create_sensor_plot(self, df: pd.DataFrame, sensor_name: str, labels: list, sample_count: int) -> QLabel:
+        """Create a small plot for a sensor and return as QLabel with embedded image."""
+        fig, ax = plt.subplots(figsize=(5, 1.5), dpi=100)
+        
+        colors = {
+            'acc': ['#e74c3c', '#27ae60', '#3498db'],
+            'gyro': ['#e74c3c', '#27ae60', '#3498db'],
+            'mag': ['#e74c3c', '#27ae60', '#3498db'],
+            'ppg_right': ['red', 'darkred', 'green', 'gray'],
+            'ppg_left': ['salmon', 'maroon', 'lightgreen', 'lightgray'],
+            'optical_temp_right': ['#e74c3c'],
+            'optical_temp_left': ['#3498db'],
+            'exg': ['#9b59b6'],
+        }
+        
+        sensor_colors = colors.get(sensor_name, ['#3498db'] * len(labels))
+        
+        for i, label in enumerate(labels):
+            if label in df.columns:
+                series = df[label].dropna()
+                if len(series) > 4:
+                    series = series.iloc[2:-2]  # Trim edges
+                if len(series) > 0:
+                    color = sensor_colors[i % len(sensor_colors)]
+                    short_label = label.split('.')[-1] if '.' in label else label
+                    ax.plot(series.index, series.values, label=short_label, color=color, linewidth=0.5)
+        
+        title = sensor_name.replace('_', ' ').title()
+        ax.set_title(f"{title} ({sample_count:,} samples)", fontsize=10, fontweight='bold')
+        ax.set_xlabel('Time (s)', fontsize=8)
+        ax.tick_params(axis='both', labelsize=7)
+        ax.grid(True, alpha=0.3)
+        if ax.get_legend_handles_labels()[1]:
+            ax.legend(fontsize=7, loc='upper right', ncol=min(len(labels), 4))
+        
+        plt.tight_layout()
+        
+        # Convert to QPixmap
+        buf = BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight', facecolor='white')
+        buf.seek(0)
+        plt.close(fig)
+        
+        pixmap = QPixmap()
+        pixmap.loadFromData(QByteArray(buf.getvalue()))
+        
+        label_widget = QLabel()
+        label_widget.setPixmap(pixmap)
+        label_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        return label_widget
 
     def _on_selection_changed(self):
         selected = self.file_list.selectedItems()
+        self._clear_preview()
+        
         if len(selected) == 1:
             idx = self.file_list.row(selected[0])
             if idx < len(self.loaded_files):
                 _, df, metadata = self.loaded_files[idx]
-                info = f"📄 {metadata['filename']}\n"
-                info += f"Version: {metadata['version']}\n"
-                info += f"Rows: {len(df)}\n\n"
-                info += "Sensor samples:\n"
-                for sensor, count in metadata['sensor_counts'].items():
+                
+                # File info header
+                info_label = QLabel()
+                info_text = f"<b>📄 {metadata['filename']}</b><br>"
+                info_text += f"Version: {metadata['version']} | Rows: {len(df)}<br>"
+                sensors_with_data = [s for s, c in metadata['sensor_counts'].items() if c > 0]
+                info_text += f"Sensors: {', '.join(sensors_with_data)}"
+                info_label.setText(info_text)
+                info_label.setStyleSheet("padding: 5px; background-color: #f0f0f0; border-radius: 5px;")
+                self.preview_layout.addWidget(info_label)
+                
+                # Collect plots for sensors with data
+                plot_widgets = []
+                for sensor_name in ACTIVE_SENSORS:
+                    count = metadata['sensor_counts'].get(sensor_name, 0)
                     if count > 0:
-                        info += f"  • {sensor}: {count}\n"
-                self.info_text.setText(info)
+                        labels = LABELS.get(sensor_name, [])
+                        # Filter to columns that exist in df
+                        existing_labels = [l for l in labels if l in df.columns]
+                        if existing_labels:
+                            plot_widget = self._create_sensor_plot(df, sensor_name, existing_labels, count)
+                            plot_widgets.append(plot_widget)
+                
+                # Stack plots vertically (one per row)
+                for plot_widget in plot_widgets:
+                    self.preview_layout.addWidget(plot_widget)
+                
+                # Add stretch at end
+                self.preview_layout.addStretch()
+                
         elif len(selected) > 1:
-            self.info_text.setText(f"{len(selected)} files selected")
+            label = QLabel(f"<b>{len(selected)} files selected</b><br>Select a single file to see preview.")
+            label.setStyleSheet("color: gray; padding: 20px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.preview_layout.addWidget(label)
         else:
-            self.info_text.clear()
+            self.preview_placeholder = QLabel("Select a file to see preview")
+            self.preview_placeholder.setStyleSheet("color: gray; padding: 20px;")
+            self.preview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.preview_layout.addWidget(self.preview_placeholder)
 
     def import_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -1011,7 +1186,12 @@ class FileConverterTab(QWidget):
     def clear_files(self):
         self.loaded_files.clear()
         self.file_list.clear()
-        self.info_text.clear()
+        self._clear_preview()
+        # Add placeholder back
+        self.preview_placeholder = QLabel("Select a file to see preview")
+        self.preview_placeholder.setStyleSheet("color: gray; padding: 20px;")
+        self.preview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_layout.addWidget(self.preview_placeholder)
         self.export_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
         self.status_label.setText("Import .oe files to convert to CSV")
@@ -1021,7 +1201,8 @@ class OpenEarableToolApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OpenEarable Tools")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(550, 500)
+        self.resize(600, 700)
 
         self.signals = WorkerSignals()
         self._create_widgets()

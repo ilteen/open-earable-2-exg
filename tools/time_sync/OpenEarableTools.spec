@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files, collect_all
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 datas = []
 binaries = []
@@ -8,11 +8,11 @@ hiddenimports = []
 # Collect bleak
 datas += collect_data_files('bleak')
 
-# Collect PyQt6 completely (important for Windows)
-pyqt6_datas, pyqt6_binaries, pyqt6_hiddenimports = collect_all('PyQt6')
-datas += pyqt6_datas
-binaries += pyqt6_binaries
-hiddenimports += pyqt6_hiddenimports
+# Only collect the PyQt6 submodules we actually need (avoid framework symlink conflicts on macOS)
+hiddenimports += collect_submodules('PyQt6.QtCore')
+hiddenimports += collect_submodules('PyQt6.QtGui')
+hiddenimports += collect_submodules('PyQt6.QtWidgets')
+hiddenimports += ['PyQt6.sip']
 
 
 a = Analysis(
@@ -24,7 +24,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision', 'tensorflow', 'scipy', 'matplotlib', 'IPython', 'jupyter', 'notebook', 'PIL', 'sympy', 'PyQt5', 'PySide2', 'PySide6'],
+    excludes=['torch', 'torchvision', 'tensorflow', 'scipy', 'IPython', 'jupyter', 'notebook', 'sympy', 'PyQt5', 'PySide2', 'PySide6'],
     noarchive=False,
     optimize=0,
 )
