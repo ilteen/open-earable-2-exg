@@ -63,7 +63,7 @@ private:
 
     const battery_settings _battery_settings = {
         3.7, 4.2, 3.0, 2.5,  // Spannungen
-        10, 110, 200,        // Ströme
+        10, 300, 300,        // Ströme
         950,                 // Kapazität
         0, 15, 45, 50        // Temperaturen
     };
