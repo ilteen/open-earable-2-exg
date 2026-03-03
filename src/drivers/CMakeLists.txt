@@ -4,9 +4,9 @@
 # SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 #
 
-target_sources_ifdef(CONFIG_NRF5340_AUDIO_CS47L63_DRIVER
-		     app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ADAU1860.cpp
-)
+if(CONFIG_NRF5340_AUDIO_CS47L63_DRIVER)
+target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ADAU1860.cpp)
+endif()
 
 add_subdirectory(LED_Controller)
 

@@ -60,9 +60,11 @@ int hw_codec_set_audio_mode(enum audio_mode mode) {
 
 	settings_save_one("audio/mode", &mode, sizeof(mode));
 
+#ifdef CONFIG_FDSP
 	ret = dac.fdsp_bank_select((uint8_t) mode);
 	// TODO: make writing to bank work
 	k_msleep(200);
+#endif
 	ret = hw_codec_volume_adjust(0);
 	ret = dac.mute(muted);
 	if (ret) {
