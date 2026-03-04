@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 datas = []
@@ -16,7 +17,7 @@ hiddenimports += ['PyQt6.sip']
 
 
 a = Analysis(
-    ['/Users/philipp/TECO/Projekte/OpenEarable/open-earable-v2/tools/time_sync/time_sync.py'],
+    [os.path.join(SPECPATH, 'time_sync.py')],
     pathex=[],
     binaries=binaries,
     datas=datas,

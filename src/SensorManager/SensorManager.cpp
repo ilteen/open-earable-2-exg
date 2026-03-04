@@ -21,6 +21,7 @@
 #include "StateIndicator.h"
 #include <ctime>
 #include <cstdio>
+#include <cstring>
 
 #include <SensorScheme.h>
 #include "../SD_Card/SDLogger/SDLogger.h"
@@ -219,36 +220,58 @@ static void config_work_handler(struct k_work *work) {
 	sensor->sd_logging(config.storageOptions & DATA_STORAGE);
 	sensor->ble_stream(config.storageOptions & DATA_STREAMING);
 
+	bool storage_ready = true;
+
 	// Start SDLogger BEFORE starting the sensor to avoid losing initial data
 	if (config.storageOptions & DATA_STORAGE) {
-		sd_sensors.insert(config.sensorId);
-
 		if (!sdlogger.is_active()) {
 			const char *recording_name_prefix = get_sensor_recording_name();
 			LOG_INF("Starting SDLogger with recording name prefix: %s", recording_name_prefix);
-			// Start SDLogger with timestamp-based filename
-			// Interpret micros() as unix timestamp in microseconds and format to DD_MM_YYYY_HH_MM_SS
-			uint64_t micros_ts = micros();
-			time_t seconds = (time_t)(micros_ts / 1000000ULL);
-			struct tm tm_buf;
-			struct tm *tm_ptr = gmtime_r(&seconds, &tm_buf);
-			char timestr[64] = {0};
-			if (tm_ptr) {
-				snprintf(timestr, sizeof(timestr), "%02d-%02d-%04d_%02d-%02d-%02d",
-						 tm_ptr->tm_mday,
-						 tm_ptr->tm_mon + 1,
-						 tm_ptr->tm_year + 1900,
-						 tm_ptr->tm_hour,
-						 tm_ptr->tm_min,
-						 tm_ptr->tm_sec);
+			std::string filename;
+			if (recording_name_prefix != NULL &&
+				strlen(recording_name_prefix) > 0 &&
+				strcmp(recording_name_prefix, "recording_") != 0) {
+				// Use externally provided filename as-is (e.g. participant + scheduled datetime)
+				filename = std::string(recording_name_prefix);
 			} else {
-				snprintf(timestr, sizeof(timestr), "%llu", (unsigned long long)seconds);
+				// Fallback: timestamp-based filename for legacy flows
+				uint64_t micros_ts = micros();
+				time_t seconds = (time_t)(micros_ts / 1000000ULL);
+				struct tm tm_buf;
+				struct tm *tm_ptr = gmtime_r(&seconds, &tm_buf);
+				char timestr[64] = {0};
+				if (tm_ptr) {
+					snprintf(timestr, sizeof(timestr), "%02d-%02d-%04d_%02d-%02d-%02d",
+							 tm_ptr->tm_mday,
+							 tm_ptr->tm_mon + 1,
+							 tm_ptr->tm_year + 1900,
+							 tm_ptr->tm_hour,
+							 tm_ptr->tm_min,
+							 tm_ptr->tm_sec);
+				} else {
+					snprintf(timestr, sizeof(timestr), "%llu", (unsigned long long)seconds);
+				}
+				filename = std::string("recording_") + timestr;
 			}
 
-			std::string filename = std::string(recording_name_prefix) + timestr;
 			int ret = sdlogger.begin(filename);
-			if (ret == 0) state_indicator.set_sd_state(SD_RECORDING);
+			if (ret == 0) {
+				state_indicator.set_sd_state(SD_RECORDING);
+			} else {
+				storage_ready = false;
+				state_indicator.set_sd_state(SD_FAULT);
+				LOG_ERR("Failed to start SDLogger for '%s', ret=%d", filename.c_str(), ret);
+			}
 		}
+
+		if (storage_ready) {
+			sd_sensors.insert(config.sensorId);
+		}
+	}
+
+	if ((config.storageOptions & DATA_STORAGE) && !storage_ready) {
+		set_sensor_config_status(config);
+		return;
 	}
 
 	if (config.storageOptions & (DATA_STORAGE | DATA_STREAMING)) {
@@ -280,6 +303,14 @@ static void config_work_handler(struct k_work *work) {
 	set_sensor_config_status(config);
 
 	if (active_sensors == 0) stop_sensor_manager();
+
+	/*
+	 * Multiple config_sensor() calls can happen back-to-back (e.g. scheduled EXG + companion PPGs).
+	 * A single k_work item may coalesce submissions, so explicitly resubmit while queue is non-empty.
+	 */
+	if (k_msgq_num_used_get(&config_queue) > 0) {
+		k_work_submit(&config_work);
+	}
 }
 
 void config_sensor(struct sensor_config * config) {

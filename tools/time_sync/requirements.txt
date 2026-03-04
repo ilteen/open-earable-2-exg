@@ -11,3 +11,10 @@ PySide6>=6.4.0
 # USB Serial Communication
 pyserial>=3.5
 
+# BLE Communication
+bleak>=0.21.0
+
+# Data Processing
+pandas
+numpy
+matplotlib

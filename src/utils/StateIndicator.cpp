@@ -166,6 +166,10 @@ void StateIndicator::set_state(struct earable_state state) {
     default:
         // Check if we're recording to SD card - this takes precedence over pairing state
         switch (_state.sd_state) {
+        case SD_WAITING_SCHEDULED_START:
+            // Double flash blue/yellow roughly every 2.5s while waiting for scheduled start
+            led_controller.pulse2(LED_BLUE, LED_YELLOW, 120, 0, 0, 2500);
+            break;
         case SD_RECORDING:
             // Use red pulsing to indicate active recording
             if (_state.pairing_state == CONNECTED) {
@@ -207,3 +211,8 @@ void StateIndicator::set_state(struct earable_state state) {
 }
 
 StateIndicator state_indicator;
+
+extern "C" void state_indicator_set_sd_state(enum sd_state state)
+{
+    state_indicator.set_sd_state(state);
+}

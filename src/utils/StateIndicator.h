@@ -11,7 +11,9 @@ static const RGBColor LED_YELLOW = {16, 16, 0};
 static const RGBColor LED_ORANGE = {24, 8, 0};
 static const RGBColor LED_CYAN = {0, 16, 16};
 static const RGBColor LED_MAGENTA = {16, 0, 16};
+static const RGBColor LED_PURPLE = {24, 0, 32};
 
+#ifdef __cplusplus
 class StateIndicator {
 public:
     void init(struct earable_state state);
@@ -31,5 +33,16 @@ private:
 };
 
 extern StateIndicator state_indicator;
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void state_indicator_set_sd_state(enum sd_state state);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

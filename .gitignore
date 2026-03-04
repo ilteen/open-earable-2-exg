@@ -16,3 +16,6 @@
 /tools/flash/uicr_backup.hex
 */.DS_Store
 *.pyc
+tools/time_sync/build
+tools/time_sync/dist/OpenEarableTools
+tools/time_sync/dist

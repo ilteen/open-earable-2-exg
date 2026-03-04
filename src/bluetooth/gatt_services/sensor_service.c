@@ -1,8 +1,11 @@
 #include "sensor_service.h"
 #include <zephyr/zbus/zbus.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
+#include <errno.h>
 #include "../SensorManager/SensorManager.h"
 #include "../ParseInfo/SensorScheme.h"
+#include "../../utils/StateIndicator.h"
 
 #include "macros_common.h"
 
@@ -44,10 +47,95 @@ void sensor_queue_listener_cb(const struct zbus_channel *chan);
 ZBUS_LISTENER_DEFINE(sensor_queue_listener, sensor_queue_listener_cb);
 
 static bool connection_complete = false;
+static bool scheduled_start_active = false;
+static uint64_t scheduled_start_unix_us = 0;
+static char scheduled_recording_name[MAX_SENSOR_REC_NAME_LENGTH] = "recording_";
+
+struct __packed scheduled_sensor_start_cfg {
+	uint8_t sensorId;
+	uint8_t sampleRateIndex;
+	uint8_t storageOptions;
+	uint8_t reserved;
+	uint64_t unixStartTimeUs;
+};
+
+#define SCHEDULED_START_MIN_LEAD_TIME_US 1000000ULL
+#define SCHEDULED_START_MAX_LEAD_TIME_US (365ULL * 24ULL * 60ULL * 60ULL * 1000000ULL)
+
+// Fixed recording rates used for both immediate and scheduled start.
+#define EXG_RECORD_SAMPLE_RATE_INDEX 4U  // ExG = 256 Hz
+#define IMU_RECORD_SAMPLE_RATE_INDEX 3U  // IMU = 200 Hz
+#define PPG_RECORD_SAMPLE_RATE_INDEX 4U  // PPG (left/right) = 200 Hz
+#define TEMP_RECORD_SAMPLE_RATE_INDEX 4U // Temp (left/right) = 8 Hz
+
+static void scheduled_sensor_start_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(scheduled_sensor_start_work, scheduled_sensor_start_work_handler);
+static void start_recording_sensor_suite(void);
 
 int notify_count = 0;
 
 int MAX_NOTIFIES_IN_FLIGHT = 4;
+
+static void schedule_or_start_sensor_config(void)
+{
+	uint64_t now_us = micros();
+
+	if (scheduled_start_unix_us <= now_us) {
+		scheduled_start_active = false;
+		scheduled_start_unix_us = 0;
+		state_indicator_set_sd_state(SD_IDLE);
+		/* Use the name captured when schedule was configured. */
+		set_sensor_recording_name(scheduled_recording_name);
+		start_recording_sensor_suite();
+		return;
+	}
+
+	uint64_t remaining_us = scheduled_start_unix_us - now_us;
+	uint32_t delay_ms = (remaining_us > 1000000ULL) ? 1000U : (uint32_t)((remaining_us + 999ULL) / 1000ULL);
+	k_work_schedule(&scheduled_sensor_start_work, K_MSEC(delay_ms));
+}
+
+static void config_recording_sensor(uint8_t sensor_id, uint8_t sample_rate_index)
+{
+	struct sensor_config sensor_cfg = {
+		.sensorId = sensor_id,
+		.sampleRateIndex = sample_rate_index,
+		.storageOptions = DATA_STORAGE,
+	};
+	config_sensor(&sensor_cfg);
+}
+
+static void start_recording_sensor_suite(void)
+{
+	config_recording_sensor(ID_EXG, EXG_RECORD_SAMPLE_RATE_INDEX);
+	config_recording_sensor(ID_IMU, IMU_RECORD_SAMPLE_RATE_INDEX);
+	config_recording_sensor(ID_PPG_right_I2C2, PPG_RECORD_SAMPLE_RATE_INDEX);
+	config_recording_sensor(ID_PPG_left_I2C3, PPG_RECORD_SAMPLE_RATE_INDEX);
+	config_recording_sensor(ID_OPTTEMP_right_I2C2, TEMP_RECORD_SAMPLE_RATE_INDEX);
+	config_recording_sensor(ID_OPTTEMP_left_I2C3, TEMP_RECORD_SAMPLE_RATE_INDEX);
+}
+
+static void cancel_scheduled_sensor_start(void)
+{
+	if (!scheduled_start_active) {
+		return;
+	}
+
+	scheduled_start_active = false;
+	scheduled_start_unix_us = 0;
+	k_work_cancel_delayable(&scheduled_sensor_start_work);
+	state_indicator_set_sd_state(SD_IDLE);
+}
+
+static void scheduled_sensor_start_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (!scheduled_start_active) {
+		return;
+	}
+
+	schedule_or_start_sensor_config();
+}
 
 static void connect_evt_handler(const struct zbus_channel *chan)
 {
@@ -84,6 +172,60 @@ static void sensor_config_status_ccc_cfg_changed(const struct bt_gatt_attr *attr
 	sensor_config_status_ntfy_enabled = (value == BT_GATT_CCC_NOTIFY);
 }
 
+static int schedule_sensor_start_internal(uint8_t sensor_id, uint8_t sample_rate_index,
+					  uint8_t storage_options, uint64_t start_time_us)
+{
+	if (sensor_id != ID_EXG) {
+		LOG_WRN("Write scheduled start: Unsupported sensor id %u (only EXG is allowed)", sensor_id);
+		return -EINVAL;
+	}
+
+	if ((storage_options & DATA_STORAGE) == 0) {
+		LOG_WRN("Write scheduled start: DATA_STORAGE not set");
+		return -EINVAL;
+	}
+
+	ARG_UNUSED(sample_rate_index);
+
+	uint64_t now_us = micros();
+	if (start_time_us <= (now_us + SCHEDULED_START_MIN_LEAD_TIME_US)) {
+		LOG_WRN("Write scheduled start: Start time too early (start=%llu now=%llu)",
+			(unsigned long long)start_time_us, (unsigned long long)now_us);
+		return -ERANGE;
+	}
+
+	if (start_time_us > (now_us + SCHEDULED_START_MAX_LEAD_TIME_US)) {
+		LOG_WRN("Write scheduled start: Start time too far in future (start=%llu now=%llu)",
+			(unsigned long long)start_time_us, (unsigned long long)now_us);
+		return -ERANGE;
+	}
+
+	if (strlen(sensor_recording_name) == 0 || strcmp(sensor_recording_name, "recording_") == 0) {
+		LOG_WRN("Write scheduled start: Recording name not configured");
+		return -EINVAL;
+	}
+
+	/* Ensure no sensors keep running while waiting for scheduled start. */
+	stop_sensor_manager();
+	cancel_scheduled_sensor_start();
+
+	scheduled_start_unix_us = start_time_us;
+	strncpy(scheduled_recording_name, sensor_recording_name, sizeof(scheduled_recording_name) - 1);
+	scheduled_recording_name[sizeof(scheduled_recording_name) - 1] = '\0';
+	scheduled_start_active = true;
+
+	state_indicator_set_sd_state(SD_WAITING_SCHEDULED_START);
+	schedule_or_start_sensor_config();
+
+	LOG_INF("Scheduled EXG start at %llu us (now=%llu, in %llu us, sr_idx=%u)",
+		(unsigned long long)scheduled_start_unix_us,
+		(unsigned long long)now_us,
+		(unsigned long long)(scheduled_start_unix_us - now_us),
+		EXG_RECORD_SAMPLE_RATE_INDEX);
+
+	return 0;
+}
+
 static ssize_t write_config(struct bt_conn *conn,
 			 const struct bt_gatt_attr *attr,
 			 const void *buf,
@@ -102,6 +244,7 @@ static ssize_t write_config(struct bt_conn *conn,
 	}
 
 	struct sensor_config * config = (struct sensor_config *)buf;
+	cancel_scheduled_sensor_start();
 
 	if (config->storageOptions == 0) {
 		LOG_INF("Setup sensor ID %i (turned off)", config->sensorId);
@@ -109,8 +252,56 @@ static ssize_t write_config(struct bt_conn *conn,
 		LOG_INF("Setup sensor ID %i with samplerateIndex %i", config->sensorId, config->sampleRateIndex);
 	}
 
-	//stop_sensor_manager();
-	config_sensor((struct sensor_config *) buf);
+	/* EXG storage write from the app means "start recording now" with full sensor set. */
+	if (config->sensorId == ID_EXG && (config->storageOptions & DATA_STORAGE) != 0U) {
+		start_recording_sensor_suite();
+	} else {
+		config_sensor((struct sensor_config *) buf);
+	}
+
+	return len;
+}
+
+static ssize_t write_scheduled_start(struct bt_conn *conn,
+			  const struct bt_gatt_attr *attr,
+			  const void *buf,
+			  uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (offset != 0) {
+		LOG_WRN("Write scheduled start: Incorrect data offset");
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+
+	if (len != sizeof(struct scheduled_sensor_start_cfg) && len != sizeof(uint64_t)) {
+		LOG_WRN("Write scheduled start: Incorrect data length: Expected %i or %i but got %i",
+			(int)sizeof(struct scheduled_sensor_start_cfg), (int)sizeof(uint64_t), len);
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+
+	const uint8_t *p = (const uint8_t *)buf;
+	uint8_t sensor_id = ID_EXG;
+	uint8_t sample_rate_index = EXG_RECORD_SAMPLE_RATE_INDEX;
+	uint8_t storage_options = DATA_STORAGE;
+	uint64_t start_time_us;
+
+	if (len == sizeof(struct scheduled_sensor_start_cfg)) {
+		sensor_id = p[0];
+		sample_rate_index = p[1];
+		storage_options = p[2];
+		start_time_us = sys_get_le64(&p[4]);
+	} else {
+		/* Backward-compatible mode: payload only contains unix start time (u64 LE). */
+		start_time_us = sys_get_le64(p);
+	}
+
+	int ret = schedule_sensor_start_internal(sensor_id, sample_rate_index, storage_options, start_time_us);
+	if (ret != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+	}
 
 	return len;
 }
@@ -136,20 +327,33 @@ static ssize_t write_sensor_rec_name(struct bt_conn *conn,
 			  const void *buf,
 			  uint16_t len, uint16_t offset, uint8_t flags)
 {
-	LOG_DBG("Attribute write, len: %u, handle: %u, conn: %p", len, attr->handle, (void *)conn);
-	if (len > MAX_SENSOR_REC_NAME_LENGTH - 1) {
-		LOG_WRN("Write sensor recording name: Data length exceeds maximum allowed length of %i", MAX_SENSOR_REC_NAME_LENGTH - 1);
+	LOG_DBG("Attribute write rec-name, len: %u, offset: %u, flags: 0x%02x, handle: %u, conn: %p",
+		len, offset, flags, attr->handle, (void *)conn);
+
+	if (offset >= (MAX_SENSOR_REC_NAME_LENGTH - 1)) {
+		LOG_WRN("Write sensor recording name: Invalid offset %u", offset);
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+
+	if ((offset + len) > (MAX_SENSOR_REC_NAME_LENGTH - 1)) {
+		LOG_WRN("Write sensor recording name: Data too long (offset=%u len=%u, max=%u)",
+			offset, len, (unsigned int)(MAX_SENSOR_REC_NAME_LENGTH - 1));
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
 
-	// Print buffer contents as a string (ensure null-termination for safety)
-	char temp_buf[MAX_SENSOR_REC_NAME_LENGTH];
-	strncpy(temp_buf, (const char *)buf, len);
-	temp_buf[len] = '\0';
+	/* For prepare writes, only validate; commit happens on execute. */
+	if (flags & BT_GATT_WRITE_FLAG_PREPARE) {
+		return len;
+	}
 
-	LOG_DBG("Write sensor recording name: %s", temp_buf);
+	if (offset == 0U) {
+		sensor_recording_name[0] = '\0';
+	}
 
-	set_sensor_recording_name(temp_buf);
+	memcpy(&sensor_recording_name[offset], buf, len);
+	sensor_recording_name[offset + len] = '\0';
+
+	LOG_DBG("Write sensor recording name committed: %s", sensor_recording_name);
 
 	return len;
 }
@@ -193,6 +397,10 @@ BT_GATT_CHARACTERISTIC(BT_UUID_SENSOR_RECORDING_NAME,
 			BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
 			BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
 			read_sensor_rec_name, write_sensor_rec_name, NULL),
+BT_GATT_CHARACTERISTIC(BT_UUID_SENSOR_SCHEDULED_START,
+			BT_GATT_CHRC_WRITE,
+			BT_GATT_PERM_WRITE,
+			NULL, write_scheduled_start, NULL),
 );
 
 static void notify_complete() {
@@ -242,7 +450,7 @@ static void notification_task(void) {
 void sensor_queue_listener_cb(const struct zbus_channel *chan) {
 	int ret;
 	const struct sensor_msg * msg;
-    
+
     msg = (struct sensor_msg *)zbus_chan_const_msg(&sensor_chan);
 
 	if (msg->stream) {
@@ -334,7 +542,7 @@ int init_sensor_service() {
 		&thread_data_notify, thread_stack_notify,
 		CONFIG_SENSOR_GATT_NOTIFY_STACK_SIZE, (k_thread_entry_t)notification_task, NULL,
 		NULL, NULL, K_PRIO_PREEMPT(CONFIG_SENSOR_GATT_NOTIFY_THREAD_PRIO), 0, K_NO_WAIT);
-	
+
 	ret = k_thread_name_set(thread_id_notify, "SENSOR_GATT_NOTIFY");
 	if (ret) {
 		LOG_ERR("Failed to create sensor_msg thread");
@@ -364,7 +572,7 @@ const char *get_sensor_recording_name() {
 
 /**
  * @brief Set the sensor recording name object.
- * 
+ *
  * @param name A pointer to the name string.
  * Has to be a valid string with a length greater than 0
  * and 0 terminated.
@@ -377,4 +585,26 @@ void set_sensor_recording_name(const char *name) {
 
 	strncpy(sensor_recording_name, name, sizeof(sensor_recording_name) - 1);
 	sensor_recording_name[sizeof(sensor_recording_name) - 1] = '\0';
+}
+
+int sensor_service_set_recording_name(const char *name)
+{
+	if (name == NULL || strlen(name) == 0) {
+		return -EINVAL;
+	}
+
+	set_sensor_recording_name(name);
+	return 0;
+}
+
+int sensor_service_schedule_start(uint8_t sensor_id, uint8_t sample_rate_index, uint8_t storage_options,
+				  uint64_t start_time_us)
+{
+	return schedule_sensor_start_internal(sensor_id, sample_rate_index, storage_options, start_time_us);
+}
+
+int sensor_service_schedule_exg_start(uint8_t sample_rate_index, uint64_t start_time_us)
+{
+	ARG_UNUSED(sample_rate_index);
+	return schedule_sensor_start_internal(ID_EXG, EXG_RECORD_SAMPLE_RATE_INDEX, DATA_STORAGE, start_time_us);
 }

@@ -54,7 +54,7 @@ SDLogger::~SDLogger() {
 //static bool _prio_boost = false;
 
 void sensor_listener_cb(const struct zbus_channel *chan) {
-    int ret;
+    int ret = 0;
     const sensor_msg* msg = (sensor_msg*)zbus_chan_const_msg(chan);
 
 	if (msg->sd) {
@@ -75,10 +75,10 @@ void sensor_listener_cb(const struct zbus_channel *chan) {
             }
         }*/
 
-        sdlogger.write_sensor_data(msg->data);
+        ret = sdlogger.write_sensor_data(msg->data);
 
 		if (ret) {
-			LOG_WRN("sd msg queue full");
+			LOG_WRN("Failed to enqueue SD sample: %d", ret);
 		}
 	}
 }
@@ -119,18 +119,34 @@ void SDLogger::sensor_sd_task() {
                 count_max_buffer_fill = fill;
                 //LOG_INF("Max buffer fill: %d bytes", count_max_buffer_fill);
             }
-            //k_mutex_lock(&write_mutex, K_FOREVER);
-            uint32_t bytes_read;
-            uint8_t * data;
-            size_t write_size = SD_BLOCK_SIZE;
-    
-            ring_buf_get_claim(&ring_buffer, &data, SD_BLOCK_SIZE);
-            bytes_read = sdlogger.sd_card->write((char*)data, &write_size, false);
-            ring_buf_get_finish(&ring_buffer, bytes_read);
+            k_mutex_lock(&write_mutex, K_FOREVER);
 
-            //k_mutex_unlock(&write_mutex);
-    
-            //fill -= bytes_read;
+            uint8_t *data = NULL;
+            uint32_t claimed = ring_buf_get_claim(&ring_buffer, &data, SD_BLOCK_SIZE);
+
+            if (claimed > 0U && data != NULL) {
+                size_t write_size = claimed;
+                int written = sdlogger.sd_card->write((char *)data, &write_size, false);
+                if (written < 0) {
+                    ring_buf_get_finish(&ring_buffer, 0);
+                    k_mutex_unlock(&write_mutex);
+                    state_indicator.set_sd_state(SD_FAULT);
+                    LOG_ERR("Failed to write claimed SD block: %d", written);
+                    continue;
+                }
+
+                if ((uint32_t)written != claimed) {
+                    ring_buf_get_finish(&ring_buffer, (written > 0) ? (uint32_t)written : 0U);
+                    k_mutex_unlock(&write_mutex);
+                    state_indicator.set_sd_state(SD_FAULT);
+                    LOG_ERR("Partial SD block write: wrote %d of %u bytes", written, claimed);
+                    continue;
+                }
+
+                ring_buf_get_finish(&ring_buffer, claimed);
+            }
+
+            k_mutex_unlock(&write_mutex);
         } else {
             k_yield();
         }
@@ -226,6 +242,9 @@ int SDLogger::begin(const std::string& filename) {
     if (ret < 0) {
         state_indicator.set_sd_state(SD_FAULT);
         LOG_ERR("Failed to write header: %d", ret);
+        sd_card->close_file();
+        is_open = false;
+        current_file.clear();
         return ret;
     }
 
@@ -242,7 +261,15 @@ int SDLogger::write_header() {
     header->version = SENSOR_LOG_VERSION;
     header->timestamp = micros();
 
-    return sd_card->write((char *) header_buffer, &header_size, false);
+    int ret = sd_card->write((char *)header_buffer, &header_size, true);
+    if (ret < 0) {
+        return ret;
+    }
+    if ((size_t)ret != sizeof(FileHeader)) {
+        LOG_ERR("Header write incomplete: wrote %d of %u bytes", ret, (unsigned int)sizeof(FileHeader));
+        return -EIO;
+    }
+    return ret;
 }
 
 int SDLogger::write_sensor_data(const void* const* data_blocks, const size_t* lengths, size_t block_count) {
@@ -282,19 +309,51 @@ int SDLogger::write_sensor_data(const sensor_data& msg) {
 }
 
 int SDLogger::flush() {
-    uint32_t bytes_read;
-    uint8_t * data;
-    size_t write_size = SD_BLOCK_SIZE;
+    int total_written = 0;
+    int ret = 0;
 
-    uint32_t fill = ring_buf_size_get(&ring_buffer);
+    k_mutex_lock(&write_mutex, K_FOREVER);
 
-    ring_buf_get_claim(&ring_buffer, &data, fill);
+    while (true) {
+        uint32_t fill = ring_buf_size_get(&ring_buffer);
+        if (fill == 0) {
+            break;
+        }
 
-    bytes_read = sd_card->write((char*)ring_buffer.buffer, &write_size, false);
+        uint8_t *data = NULL;
+        uint32_t claimed = ring_buf_get_claim(&ring_buffer, &data, fill);
+        if (claimed == 0 || data == NULL) {
+            break;
+        }
 
-    ring_buf_get_finish(&ring_buffer, bytes_read);
+        size_t write_size = claimed;
+        int written = sd_card->write((char *)data, &write_size, false);
+        if (written < 0) {
+            ring_buf_get_finish(&ring_buffer, 0);
+            ret = written;
+            goto flush_out;
+        }
+        if ((uint32_t)written != claimed) {
+            ring_buf_get_finish(&ring_buffer, (written > 0) ? (uint32_t)written : 0U);
+            LOG_ERR("Partial flush write: wrote %d of %u bytes", written, claimed);
+            ret = -EIO;
+            goto flush_out;
+        }
 
-    return bytes_read;
+        ring_buf_get_finish(&ring_buffer, claimed);
+        total_written += written;
+    }
+
+    ret = sd_card->sync();
+    if (ret < 0) {
+        goto flush_out;
+    }
+
+    ret = total_written;
+
+flush_out:
+    k_mutex_unlock(&write_mutex);
+    return ret;
 }
 
 int SDLogger::end() {

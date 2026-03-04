@@ -507,11 +507,16 @@ ssize_t SDCardManager::write(char *buf, size_t *buf_size, bool sync) {
 		return ret;
 	}
 
-	ret = fs_write(&this->tracked_file.filep, buf, *buf_size);
-	if (ret < 0) {
-		LOG_ERR("Write file failed. Ret: %d", ret);
+	ssize_t written = fs_write(&this->tracked_file.filep, buf, *buf_size);
+	if (written < 0) {
+		LOG_ERR("Write file failed. Ret: %d", (int)written);
 		k_mutex_unlock(&m_sem_sd_mngr_oper_ongoing);
-		return ret;
+		return written;
+	}
+	if ((size_t)written != *buf_size) {
+		LOG_ERR("Partial file write: wrote %d of %u bytes", (int)written, (unsigned int)*buf_size);
+		k_mutex_unlock(&m_sem_sd_mngr_oper_ongoing);
+		return -EIO;
 	}
 
 	if (sync) {
@@ -525,7 +530,7 @@ ssize_t SDCardManager::write(char *buf, size_t *buf_size, bool sync) {
 
 	k_mutex_unlock(&m_sem_sd_mngr_oper_ongoing);
 
-	return ret;
+	return written;
 }
 
 ssize_t SDCardManager::write(std::string path, char *buf, size_t *buf_size, bool append) {

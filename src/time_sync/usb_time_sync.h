@@ -8,6 +8,9 @@
  *   Request:  [0xAA][0x01][seq:1][t1:8]           = 11 bytes
  *   Response: [0xAA][0x02][seq:1][t1:8][t2:8][t3:8] = 27 bytes
  *   Offset:   [0xAA][0x03][offset:8]              = 10 bytes
+ *   RecName:  [0xAA][0x04][name_len:1][name:n]
+ *   Schedule: [0xAA][0x05][sensor:1][sr_idx:1][storage:1][res:1][start_us:8] = 14 bytes
+ *   Ack:      [0xAA][0x06][cmd:1][status:1]       = 4 bytes
  */
 
 #pragma once

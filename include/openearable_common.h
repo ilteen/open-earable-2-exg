@@ -69,6 +69,7 @@ enum led_mode {
 
 enum sd_state {
     SD_IDLE,
+    SD_WAITING_SCHEDULED_START,
     SD_RECORDING,
 	SD_FAULT,
 };
