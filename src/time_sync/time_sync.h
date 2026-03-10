@@ -51,6 +51,21 @@ void time_sync_set_offset(int64_t offset_us);
 void time_sync_apply_offset(int64_t delta_us);
 
 /**
+ * @brief Check whether synchronized UNIX time is available.
+ *
+ * @return true if a valid time sync offset is available.
+ */
+bool time_sync_is_synced(void);
+
+/**
+ * @brief Persist the current synchronized UNIX time snapshot to settings.
+ *
+ * Intended for long-running scheduled waits so reset recovery can restore time
+ * close to the latest known wall clock.
+ */
+void time_sync_persist_now_snapshot(void);
+
+/**
  * @brief Initialize the time synchronization module.
  *
  * @return 0 on success, negative error code on failure.

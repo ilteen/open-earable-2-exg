@@ -2,10 +2,16 @@
 #include <zephyr/zbus/zbus.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/toolchain/common.h>
+#include <zephyr/settings/settings.h>
 #include <errno.h>
+#include <stddef.h>
+#include <string.h>
 #include "../SensorManager/SensorManager.h"
 #include "../ParseInfo/SensorScheme.h"
 #include "../../utils/StateIndicator.h"
+#include "../../time_sync/time_sync.h"
+#include "../../Battery/BootState.h"
 
 #include "macros_common.h"
 
@@ -51,6 +57,24 @@ static bool scheduled_start_active = false;
 static uint64_t scheduled_start_unix_us = 0;
 static char scheduled_recording_name[MAX_SENSOR_REC_NAME_LENGTH] = "recording_";
 
+#define SCHEDULED_START_RETAINED_MAGIC 0x53434844U /* "SCHD" */
+#define SCHEDULED_START_RETAINED_VERSION 1U
+#define SCHEDULED_START_SETTINGS_KEY "oe_sched/state"
+
+struct __packed retained_scheduled_start_state {
+	uint32_t magic;
+	uint16_t version;
+	uint8_t active;
+	uint8_t reserved0;
+	uint64_t unix_start_time_us;
+	char recording_name[MAX_SENSOR_REC_NAME_LENGTH];
+	uint32_t checksum;
+};
+
+static struct retained_scheduled_start_state retained_scheduled_start __noinit;
+static struct retained_scheduled_start_state settings_scheduled_start;
+static bool settings_scheduled_start_valid = false;
+
 struct __packed scheduled_sensor_start_cfg {
 	uint8_t sensorId;
 	uint8_t sampleRateIndex;
@@ -71,6 +95,179 @@ struct __packed scheduled_sensor_start_cfg {
 static void scheduled_sensor_start_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(scheduled_sensor_start_work, scheduled_sensor_start_work_handler);
 static void start_recording_sensor_suite(void);
+static void sensor_service_time_sync_callback(void);
+static void schedule_or_start_sensor_config(void);
+
+static uint32_t checksum_fnv1a32(const uint8_t *data, size_t len)
+{
+	uint32_t hash = 2166136261U;
+	for (size_t i = 0; i < len; ++i) {
+		hash ^= data[i];
+		hash *= 16777619U;
+	}
+	return hash;
+}
+
+static uint32_t retained_scheduled_start_checksum(const struct retained_scheduled_start_state *state)
+{
+	return checksum_fnv1a32((const uint8_t *)state,
+				offsetof(struct retained_scheduled_start_state, checksum));
+}
+
+static bool scheduled_start_state_valid(const struct retained_scheduled_start_state *state)
+{
+	if (state == NULL) {
+		return false;
+	}
+
+	if (state->magic != SCHEDULED_START_RETAINED_MAGIC ||
+	    state->version != SCHEDULED_START_RETAINED_VERSION ||
+	    state->active != 1U) {
+		return false;
+	}
+
+	if (state->checksum != retained_scheduled_start_checksum(state)) {
+		return false;
+	}
+
+	if (state->recording_name[0] == '\0') {
+		return false;
+	}
+
+	return true;
+}
+
+static int scheduled_start_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	if (strcmp(name, "state") != 0) {
+		return -ENOENT;
+	}
+
+	if (len != sizeof(struct retained_scheduled_start_state)) {
+		return -EINVAL;
+	}
+
+	struct retained_scheduled_start_state state = {0};
+	int rc = read_cb(cb_arg, &state, sizeof(state));
+	if (rc < 0) {
+		return rc;
+	}
+
+	if (rc != sizeof(state)) {
+		return -EINVAL;
+	}
+
+	if (!scheduled_start_state_valid(&state)) {
+		LOG_WRN("Ignoring persisted scheduled start due to invalid payload");
+		settings_scheduled_start_valid = false;
+		return 0;
+	}
+
+	settings_scheduled_start = state;
+	settings_scheduled_start_valid = true;
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(scheduled_start_settings, "oe_sched", NULL, scheduled_start_settings_set, NULL, NULL);
+
+static void retained_scheduled_start_clear(void)
+{
+	(void)memset(&retained_scheduled_start, 0, sizeof(retained_scheduled_start));
+}
+
+static void retained_scheduled_start_store(void)
+{
+	if (!scheduled_start_active) {
+		retained_scheduled_start_clear();
+		return;
+	}
+
+	struct retained_scheduled_start_state tmp = {0};
+	tmp.magic = SCHEDULED_START_RETAINED_MAGIC;
+	tmp.version = SCHEDULED_START_RETAINED_VERSION;
+	tmp.active = 1U;
+	tmp.unix_start_time_us = scheduled_start_unix_us;
+	strncpy(tmp.recording_name, scheduled_recording_name, sizeof(tmp.recording_name) - 1U);
+	tmp.recording_name[sizeof(tmp.recording_name) - 1U] = '\0';
+	tmp.checksum = retained_scheduled_start_checksum(&tmp);
+	retained_scheduled_start = tmp;
+}
+
+static void persist_scheduled_start_to_settings(void)
+{
+	if (!scheduled_start_active) {
+		int ret = settings_delete(SCHEDULED_START_SETTINGS_KEY);
+		if (ret != 0 && ret != -ENOENT) {
+			LOG_WRN("Failed to clear persisted scheduled start, ret=%d", ret);
+		}
+		return;
+	}
+
+	struct retained_scheduled_start_state tmp = {0};
+	tmp.magic = SCHEDULED_START_RETAINED_MAGIC;
+	tmp.version = SCHEDULED_START_RETAINED_VERSION;
+	tmp.active = 1U;
+	tmp.unix_start_time_us = scheduled_start_unix_us;
+	strncpy(tmp.recording_name, scheduled_recording_name, sizeof(tmp.recording_name) - 1U);
+	tmp.recording_name[sizeof(tmp.recording_name) - 1U] = '\0';
+	tmp.checksum = retained_scheduled_start_checksum(&tmp);
+
+	int ret = settings_save_one(SCHEDULED_START_SETTINGS_KEY, &tmp, sizeof(tmp));
+	if (ret != 0) {
+		LOG_WRN("Failed to persist scheduled start to settings, ret=%d", ret);
+	}
+}
+
+static bool retained_scheduled_start_restore(uint64_t *start_time_us, char *name, size_t name_size)
+{
+	if (start_time_us == NULL || name == NULL || name_size == 0U) {
+		return false;
+	}
+
+	if (!scheduled_start_state_valid(&retained_scheduled_start)) {
+		return false;
+	}
+
+	*start_time_us = retained_scheduled_start.unix_start_time_us;
+	strncpy(name, retained_scheduled_start.recording_name, name_size - 1U);
+	name[name_size - 1U] = '\0';
+	return true;
+}
+
+static void restore_scheduled_sensor_start_if_needed(void)
+{
+	uint64_t restored_start_us = 0;
+	char restored_name[MAX_SENSOR_REC_NAME_LENGTH] = {0};
+
+	if (settings_scheduled_start_valid) {
+		restored_start_us = settings_scheduled_start.unix_start_time_us;
+		strncpy(restored_name, settings_scheduled_start.recording_name, sizeof(restored_name) - 1U);
+		restored_name[sizeof(restored_name) - 1U] = '\0';
+		LOG_INF("Restored scheduled recording from settings at %llu us with name '%s'",
+			(unsigned long long)restored_start_us, restored_name);
+	} else if (retained_scheduled_start_restore(&restored_start_us, restored_name, sizeof(restored_name))) {
+		LOG_INF("Restored scheduled recording from retained RAM at %llu us with name '%s'",
+			(unsigned long long)restored_start_us, restored_name);
+	} else {
+		LOG_INF("Boot startup: no persisted scheduled recording found");
+		return;
+	}
+
+	scheduled_start_unix_us = restored_start_us;
+	strncpy(scheduled_recording_name, restored_name, sizeof(scheduled_recording_name) - 1U);
+	scheduled_recording_name[sizeof(scheduled_recording_name) - 1U] = '\0';
+	scheduled_start_active = true;
+
+	state_indicator_set_sd_state(SD_WAITING_SCHEDULED_START);
+	LOG_INF("Restored scheduled recording start at %llu us with name '%s'",
+		(unsigned long long)scheduled_start_unix_us, scheduled_recording_name);
+
+	if (time_sync_is_synced()) {
+		schedule_or_start_sensor_config();
+	} else {
+		LOG_INF("Retained schedule is pending; waiting for time sync before activating");
+	}
+}
 
 int notify_count = 0;
 
@@ -83,6 +280,8 @@ static void schedule_or_start_sensor_config(void)
 	if (scheduled_start_unix_us <= now_us) {
 		scheduled_start_active = false;
 		scheduled_start_unix_us = 0;
+		retained_scheduled_start_clear();
+		persist_scheduled_start_to_settings();
 		state_indicator_set_sd_state(SD_IDLE);
 		/* Use the name captured when schedule was configured. */
 		set_sensor_recording_name(scheduled_recording_name);
@@ -92,6 +291,7 @@ static void schedule_or_start_sensor_config(void)
 
 	uint64_t remaining_us = scheduled_start_unix_us - now_us;
 	uint32_t delay_ms = (remaining_us > 1000000ULL) ? 1000U : (uint32_t)((remaining_us + 999ULL) / 1000ULL);
+	time_sync_persist_now_snapshot();
 	k_work_schedule(&scheduled_sensor_start_work, K_MSEC(delay_ms));
 }
 
@@ -117,13 +317,11 @@ static void start_recording_sensor_suite(void)
 
 static void cancel_scheduled_sensor_start(void)
 {
-	if (!scheduled_start_active) {
-		return;
-	}
-
+	k_work_cancel_delayable(&scheduled_sensor_start_work);
 	scheduled_start_active = false;
 	scheduled_start_unix_us = 0;
-	k_work_cancel_delayable(&scheduled_sensor_start_work);
+	retained_scheduled_start_clear();
+	persist_scheduled_start_to_settings();
 	state_indicator_set_sd_state(SD_IDLE);
 }
 
@@ -213,6 +411,8 @@ static int schedule_sensor_start_internal(uint8_t sensor_id, uint8_t sample_rate
 	strncpy(scheduled_recording_name, sensor_recording_name, sizeof(scheduled_recording_name) - 1);
 	scheduled_recording_name[sizeof(scheduled_recording_name) - 1] = '\0';
 	scheduled_start_active = true;
+	retained_scheduled_start_store();
+	persist_scheduled_start_to_settings();
 
 	state_indicator_set_sd_state(SD_WAITING_SCHEDULED_START);
 	schedule_or_start_sensor_config();
@@ -224,6 +424,15 @@ static int schedule_sensor_start_internal(uint8_t sensor_id, uint8_t sample_rate
 		EXG_RECORD_SAMPLE_RATE_INDEX);
 
 	return 0;
+}
+
+static void sensor_service_time_sync_callback(void)
+{
+	if (!scheduled_start_active) {
+		return;
+	}
+
+	schedule_or_start_sensor_config();
 }
 
 static ssize_t write_config(struct bt_conn *conn,
@@ -561,7 +770,21 @@ int init_sensor_service() {
 		return ret;
 	}
 
+	time_sync_register_callback(sensor_service_time_sync_callback);
 	init_sensor_config_status();
+
+	if (oe_boot_state.manual_reset) {
+		LOG_INF("Manual reset detected: clearing persisted scheduled recording state");
+		scheduled_start_active = false;
+		scheduled_start_unix_us = 0;
+		scheduled_recording_name[0] = '\0';
+		settings_scheduled_start_valid = false;
+		retained_scheduled_start_clear();
+		persist_scheduled_start_to_settings();
+		state_indicator_set_sd_state(SD_IDLE);
+	}
+
+	restore_scheduled_sensor_start_if_needed();
 
     return 0;
 }

@@ -51,6 +51,62 @@ ZBUS_CHAN_DEFINE(battery_chan, struct battery_data, NULL, NULL, ZBUS_OBSERVERS_E
 
 static struct battery_data msg;
 
+static void log_reset_reason(uint32_t reset_reas)
+{
+    LOG_INF("RESETREAS=0x%08x", reset_reas);
+#ifdef RESET_RESETREAS_RESETPIN_Msk
+    if (reset_reas & RESET_RESETREAS_RESETPIN_Msk) {
+        LOG_INF("Reset reason: pin reset");
+    }
+#endif
+#ifdef RESET_RESETREAS_SREQ_Msk
+    if (reset_reas & RESET_RESETREAS_SREQ_Msk) {
+        LOG_INF("Reset reason: software reset");
+    }
+#endif
+#ifdef RESET_RESETREAS_DOG0_Msk
+    if (reset_reas & RESET_RESETREAS_DOG0_Msk) {
+        LOG_WRN("Reset reason: watchdog 0");
+    }
+#endif
+#ifdef RESET_RESETREAS_DOG1_Msk
+    if (reset_reas & RESET_RESETREAS_DOG1_Msk) {
+        LOG_WRN("Reset reason: watchdog 1");
+    }
+#endif
+#ifdef RESET_RESETREAS_LOCKUP_Msk
+    if (reset_reas & RESET_RESETREAS_LOCKUP_Msk) {
+        LOG_WRN("Reset reason: CPU lockup");
+    }
+#endif
+#ifdef RESET_RESETREAS_CTRLAP_Msk
+    if (reset_reas & RESET_RESETREAS_CTRLAP_Msk) {
+        LOG_INF("Reset reason: debug interface");
+    }
+#endif
+}
+
+static bool keep_power_on_after_reset(uint32_t reset_reas)
+{
+    bool keep_on = false;
+#ifdef RESET_RESETREAS_SREQ_Msk
+    keep_on = keep_on || ((reset_reas & RESET_RESETREAS_SREQ_Msk) != 0U);
+#endif
+#ifdef RESET_RESETREAS_DOG0_Msk
+    keep_on = keep_on || ((reset_reas & RESET_RESETREAS_DOG0_Msk) != 0U);
+#endif
+#ifdef RESET_RESETREAS_DOG1_Msk
+    keep_on = keep_on || ((reset_reas & RESET_RESETREAS_DOG1_Msk) != 0U);
+#endif
+#ifdef RESET_RESETREAS_LOCKUP_Msk
+    keep_on = keep_on || ((reset_reas & RESET_RESETREAS_LOCKUP_Msk) != 0U);
+#endif
+#ifdef RESET_RESETREAS_CTRLAP_Msk
+    keep_on = keep_on || ((reset_reas & RESET_RESETREAS_CTRLAP_Msk) != 0U);
+#endif
+    return keep_on;
+}
+
 //LoadSwitch PowerManager::v1_8_switch(GPIO_DT_SPEC_GET(DT_NODELABEL(load_switch), gpios));
 
 void PowerManager::fuel_gauge_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
@@ -281,11 +337,14 @@ int PowerManager::begin() {
 
     // get reset reason
     uint32_t reset_reas = NRF_RESET->RESETREAS;
+    log_reset_reason(reset_reas);
+    oe_boot_state.manual_reset = false;
 
     // reset the reset reason
     NRF_RESET->RESETREAS = 0xFFFFFFFF;
     
     if (reset_reas & RESET_RESETREAS_RESETPIN_Msk) {
+        oe_boot_state.manual_reset = true;
         oe_boot_state.timer_reset = bat_state & (1 << 4);
         power_on |= oe_boot_state.timer_reset;
     }
@@ -294,8 +353,8 @@ int PowerManager::begin() {
         printk("Reset durch Watchdog-Timer\n");
     }*/
 
-    if (reset_reas & RESET_RESETREAS_SREQ_Msk) {
-        LOG_INF("Rebooting ...");
+    if (keep_power_on_after_reset(reset_reas)) {
+        LOG_WRN("Runtime reset detected, keeping power_on state active");
         power_on = true;
     }
 
@@ -472,7 +531,21 @@ bool PowerManager::check_battery() {
     }
 
     bat_status bs = fuel_gauge.battery_status();
-    if (bs.SYSDWN) return false;
+    if (bs.SYSDWN) {
+        /* Confirm SYSDWN and cross-check with voltage to avoid false shutdowns. */
+        k_msleep(10);
+        bat_status bs_confirm = fuel_gauge.battery_status();
+        float voltage = fuel_gauge.voltage();
+        float sysdwn_guard_v = _battery_settings.u_vlo + 0.05f;
+
+        if (bs_confirm.SYSDWN && voltage < sysdwn_guard_v) {
+            LOG_WRN("Battery SYSDWN confirmed at %.3f V (threshold %.3f V)", voltage, sysdwn_guard_v);
+            return false;
+        }
+
+        LOG_WRN("Ignoring transient/contradicting SYSDWN (voltage %.3f V, threshold %.3f V)",
+                voltage, sysdwn_guard_v);
+    }
 
     //gauge_status gs = fuel_gauge.gauging_state();
     //if (gs.edv1) return false; // critical battery state

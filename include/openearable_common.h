@@ -39,6 +39,7 @@ typedef uint8_t RGBColor[3];
 
 struct boot_state {
 	bool timer_reset;
+	bool manual_reset;
 	uint64_t device_id;
 };
 
