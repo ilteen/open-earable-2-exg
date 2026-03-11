@@ -32,9 +32,11 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for embedding
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from io import BytesIO
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
+import digitalfilter
 
 # Try PyQt6 first, fall back to PySide6 (better Windows compatibility)
 try:
@@ -97,7 +99,9 @@ BLE_CONNECT_ATTEMPTS = 3
 BLE_CONNECT_RETRY_DELAY_S = 2.0
 APP_LAUNCH_UNIX_TS = int(time.time())
 DEFAULT_PARTICIPANT_ID = f"P{APP_LAUNCH_UNIX_TS % 10000:04d}"
-EXG_SAMPLERATE_INDEX_250HZ = 3
+# ExG sample-rate index mapping is defined in src/SensorManager/ExG.cpp.
+# Current mapping uses index 5 for 256 Hz.
+EXG_SAMPLERATE_INDEX_256HZ = 5
 
 SENSOR_SERVICE_UUID = "34c2e3bb-34aa-11eb-adc1-0242ac120002"
 SENSOR_CONFIG_CHAR_UUID = "34c2e3be-34aa-11eb-adc1-0242ac120002"
@@ -371,7 +375,7 @@ async def sync_time_and_schedule_exg_recording(
     device: BLEDevice | str,
     participant_id: str,
     scheduled_start_us: int,
-    sample_rate_index: int = EXG_SAMPLERATE_INDEX_250HZ,
+    sample_rate_index: int = EXG_SAMPLERATE_INDEX_256HZ,
     device_display_name: Optional[str] = None,
     progress_callback=None,
 ) -> tuple[bool, str]:
@@ -784,7 +788,7 @@ def sync_time_and_schedule_exg_recording_usb(
     port: str,
     participant_id: str,
     scheduled_start_us: int,
-    sample_rate_index: int = EXG_SAMPLERATE_INDEX_250HZ,
+    sample_rate_index: int = EXG_SAMPLERATE_INDEX_256HZ,
     progress_callback=None,
     debug_callback=None,
 ) -> tuple[bool, str]:
@@ -1603,49 +1607,51 @@ class ExGLivePlotTab(QWidget):
         self.scan_thread: Optional[threading.Thread] = None
         self.stream_stop_event = threading.Event()
         self.stream_running = False
+        self.stream_thread: Optional[threading.Thread] = None
+        self.is_closing = False
         self.display_max_samples = 500
-        self.stream_sample_rate_hz = 200.0
-        self.hp_cutoff_hz = 1.0
-        self.lp_cutoff_hz = 30.0
+        self.stream_sample_rate_hz = 256.0
+        self.min_buffer_uv = 400.0
+        self.autoscale = False
+        self.enable_filters = True
         self.samples = deque(maxlen=self.display_max_samples)
         self.sample_lock = threading.Lock()
         self.plot_dirty = False
+        self.figure = Figure(figsize=(7.5, 2.6), dpi=100)
+        self.ax = self.figure.add_subplot(111)
+        self.line, = self.ax.plot([], [])
         self._reset_filter_state()
+        self._init_plot()
         self._create_widgets()
         self._connect_signals()
 
     def _reset_filter_state(self):
-        self._filter_initialized = False
-        self._x_prev = 0.0
-        self._hp_prev = 0.0
-        self._lp_prev = 0.0
+        self.filters = digitalfilter.get_Biopotential_filter(
+            order=4,
+            cutoff=[1, 30],
+            btype="bandpass",
+            fs=self.stream_sample_rate_hz,
+            output="sos",
+        )
 
-    def _apply_bandpass_filter(self, x: float) -> float:
-        dt = 1.0 / max(self.stream_sample_rate_hz, 1.0)
-        rc_hp = 1.0 / (2.0 * np.pi * self.hp_cutoff_hz)
-        rc_lp = 1.0 / (2.0 * np.pi * self.lp_cutoff_hz)
-        alpha_hp = rc_hp / (rc_hp + dt)
-        alpha_lp = dt / (rc_lp + dt)
-
-        if not self._filter_initialized:
-            self._filter_initialized = True
-            self._x_prev = x
-            self._hp_prev = 0.0
-            self._lp_prev = 0.0
-            return 0.0
-
-        hp = alpha_hp * (self._hp_prev + x - self._x_prev)
-        lp = self._lp_prev + alpha_lp * (hp - self._lp_prev)
-
-        self._x_prev = x
-        self._hp_prev = hp
-        self._lp_prev = lp
-        return lp
+    def _init_plot(self):
+        self.ax.clear()
+        self.line, = self.ax.plot([], [], color="#2c7fb8", linewidth=1.0)
+        self.ax.set_xlim(0, self.display_max_samples)
+        self.ax.set_title("Biopotential Data from OpenEarable ExG")
+        self.ax.set_ylabel("Voltage (\u00b5V)")
+        self.ax.set_xlabel("Samples")
+        self.ax.grid(True, alpha=0.3)
+        self.figure.subplots_adjust(left=0.08, right=0.99, bottom=0.20, top=0.88)
+        if not self.autoscale:
+            self.ax.set_ylim(-self.min_buffer_uv, self.min_buffer_uv)
 
     def _push_sample(self, value_uv: float):
+        if self.is_closing:
+            return
+        filtered = float(self.filters(value_uv))
         with self.sample_lock:
-            filtered = self._apply_bandpass_filter(value_uv)
-            self.samples.append(filtered)
+            self.samples.append(filtered if self.enable_filters else value_uv)
             self.plot_dirty = True
 
     def _create_widgets(self):
@@ -1710,7 +1716,7 @@ class ExGLivePlotTab(QWidget):
         layout.addWidget(plot_group)
 
         self.plot_timer = QTimer(self)
-        self.plot_timer.setInterval(100)
+        self.plot_timer.setInterval(20)
         self.plot_timer.timeout.connect(self._update_plot)
         self.plot_timer.start()
 
@@ -1729,7 +1735,7 @@ class ExGLivePlotTab(QWidget):
         self.progress.setVisible(not enabled and not self.stream_running)
 
     def start_scan(self):
-        if self.stream_running:
+        if self.stream_running or self.is_closing:
             return
         self.scan_stop_event.clear()
         self.scan_in_progress = True
@@ -1805,10 +1811,11 @@ class ExGLivePlotTab(QWidget):
         self.scan_thread = None
         self.set_buttons_enabled(True)
         self.status_label.setText(f"Scan error: {error}")
-        QMessageBox.critical(self, "Scan Error", error)
+        if not self.is_closing:
+            QMessageBox.critical(self, "Scan Error", error)
 
     def start_stream(self):
-        if self.stream_running:
+        if self.stream_running or self.is_closing:
             return
         self._stop_scan_if_running()
 
@@ -1831,27 +1838,34 @@ class ExGLivePlotTab(QWidget):
         self.set_buttons_enabled(True)
         self.status_label.setText(f"Connecting to {device.name}...")
 
-        thread = threading.Thread(target=self._stream_thread, args=(device,), daemon=True)
-        thread.start()
+        self.stream_thread = threading.Thread(target=self._stream_thread, args=(device,), daemon=True)
+        self.stream_thread.start()
 
     def _stream_thread(self, device: BLEDevice):
         try:
             self.loop.run_until_complete(self._stream_device(device))
         finally:
-            self.stream_finished.emit()
+            if not self.is_closing:
+                self.stream_finished.emit()
 
     async def _stream_device(self, device: BLEDevice):
+        if self.is_closing:
+            return
         self.status_update.emit("Connecting...")
         try:
             async with BleakClient(device) as client:
+                if self.is_closing:
+                    return
                 self.status_update.emit("Connected. Enabling ExG streaming...")
-                # Keep live mode aligned with scheduled/immediate ExG sample rate.
+                # Keep ExG live stream behavior aligned with record_and_realtime_plot_BLE.py.
                 stream_cfg = build_sensor_config(
-                    SENSOR_ID_EXG, EXG_SAMPLERATE_INDEX_250HZ, DATA_STREAMING
+                    SENSOR_ID_EXG, EXG_SAMPLERATE_INDEX_256HZ, DATA_STREAMING
                 )
                 await client.write_gatt_char(SENSOR_CONFIG_CHAR_UUID, stream_cfg)
 
                 def on_notification(sender, data: bytearray):
+                    if self.is_closing or self.stream_stop_event.is_set():
+                        return
                     pkt = parse_sensor_packet(bytes(data))
                     if pkt is None:
                         return
@@ -1873,6 +1887,8 @@ class ExGLivePlotTab(QWidget):
                 await client.write_gatt_char(SENSOR_CONFIG_CHAR_UUID, stop_cfg)
                 self.status_update.emit("ExG stream stopped.")
         except Exception as e:
+            if self.is_closing:
+                return
             self.status_update.emit(f"Stream error: {e}")
 
     def stop_stream(self):
@@ -1885,6 +1901,7 @@ class ExGLivePlotTab(QWidget):
             self.samples.clear()
             self.plot_dirty = True
             self._reset_filter_state()
+        self._init_plot()
         self.plot_label.setText("Plot cleared.")
 
     def on_sample_received(self, value_uv: float):
@@ -1895,11 +1912,14 @@ class ExGLivePlotTab(QWidget):
 
     def on_stream_finished(self):
         self.stream_running = False
+        self.stream_thread = None
         self.disconnect_btn.setEnabled(False)
         self.refresh_btn.setEnabled(True)
         self.connect_btn.setEnabled(True)
 
     def _update_plot(self):
+        if self.is_closing:
+            return
         with self.sample_lock:
             if not self.plot_dirty:
                 return
@@ -1909,33 +1929,37 @@ class ExGLivePlotTab(QWidget):
         if len(values) < 2:
             return
 
-        values_arr = np.asarray(values, dtype=float)
-        values_arr = values_arr - np.mean(values_arr)
-        values = values_arr.tolist()
-
-        fig, ax = plt.subplots(figsize=(7.5, 2.6), dpi=100)
-        ax.plot(values, color="#2c7fb8", linewidth=1.0)
-        ax.set_title("Live ExG (Filtered 1-30 Hz, uV)")
-        ax.set_xlabel(f"Recent Samples (max {self.display_max_samples})")
-        ax.set_ylabel("Filtered uV")
-        ax.grid(True, alpha=0.3)
-
+        self.line.set_data(range(len(values)), values)
         min_val = min(values)
         max_val = max(values)
-        span = max(max_val - min_val, 20.0)
-        margin = span * 0.1
-        ax.set_ylim(min_val - margin, max_val + margin)
+        buffer = (
+            0.1 * (max_val - min_val)
+            if (max_val - min_val) > self.min_buffer_uv
+            else self.min_buffer_uv
+        )
+        if self.autoscale:
+            self.ax.set_ylim(min_val - buffer, max_val + buffer)
+        else:
+            self.ax.set_ylim(-self.min_buffer_uv, self.min_buffer_uv)
 
-        plt.tight_layout()
         buf = BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
+        self.figure.savefig(buf, format="png", facecolor="white")
         buf.seek(0)
-        plt.close(fig)
 
         pixmap = QPixmap()
         pixmap.loadFromData(QByteArray(buf.getvalue()))
         self.plot_label.setPixmap(pixmap)
         self.plot_dirty = False
+
+    def shutdown(self, timeout_s: float = 3.0):
+        self.is_closing = True
+        self.plot_timer.stop()
+        self.stop_scan()
+        self.stop_stream()
+        if self.stream_thread and self.stream_thread.is_alive():
+            self.stream_thread.join(timeout=timeout_s)
+        if not self.loop.is_closed():
+            self.loop.close()
 
 
 class FileConverterTab(QWidget):
@@ -2314,8 +2338,8 @@ class OpenEarableToolApp(QMainWindow):
         self.exg_live_tab.stop_scan()
 
     def closeEvent(self, event):
-        if hasattr(self, "exg_live_tab") and self.exg_live_tab.stream_running:
-            self.exg_live_tab.stop_stream()
+        if hasattr(self, "exg_live_tab"):
+            self.exg_live_tab.shutdown()
         super().closeEvent(event)
 
 

@@ -12,10 +12,10 @@ AD7124* ExG::adc = nullptr;
 static struct sensor_msg msg_exg;
 
 // samples per second: 614400/(32*x) where x is the samplesPerSecondVal
-const SampleRateSetting<9> ExG::sample_rates = {
-    {384, 320, 160, 96, 75, 60, 38, 19, 1},                        // reg_vals (FS values)
-    {50, 60, 120, 200, 256, 320, 505, 1010, 19200},                 // sample_rates (nominal)
-    {50.0, 60.0, 120.0, 200.0,256.0, 320.0, 505.0, 1010.0, 19200.0}  // true_sample_rates
+const SampleRateSetting<10> ExG::sample_rates = {
+    {384, 320, 192, 160, 96, 75, 60, 38, 19, 1},                            // reg_vals (FS values)
+    {50, 60, 100, 120, 200, 256, 320, 505, 1010, 19200},                    // sample_rates (nominal)
+    {50.0, 60.0, 100.0, 120.0, 200.0, 256.0, 320.0, 505.0, 1010.0, 19200.0} // true_sample_rates
 };
 
 bool ExG::init(struct k_msgq* queue) {
