@@ -59,6 +59,43 @@ struct sensor_msg msg;
 
 struct k_thread sensor_publish;
 
+static int berlin_utc_offset_seconds(time_t utc_seconds)
+{
+	struct tm utc_tm;
+	if (gmtime_r(&utc_seconds, &utc_tm) == NULL) {
+		return 3600;
+	}
+
+	auto weekday_sunday0 = [](int year, int month_one_based, int day) {
+		static const int month_offsets[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+		if (month_one_based < 3) {
+			year -= 1;
+		}
+		return (year + year / 4 - year / 100 + year / 400 +
+			month_offsets[month_one_based - 1] + day) % 7;
+	};
+
+	const int year = utc_tm.tm_year + 1900;
+	const int month = utc_tm.tm_mon + 1;
+	const int day = utc_tm.tm_mday;
+	const int hour = utc_tm.tm_hour;
+	const int march_last_sunday = 31 - weekday_sunday0(year, 3, 31);
+	const int october_last_sunday = 31 - weekday_sunday0(year, 10, 31);
+
+	bool is_dst = false;
+	if (month > 3 && month < 10) {
+		is_dst = true;
+	} else if (month == 3) {
+		is_dst = (day > march_last_sunday) ||
+			 (day == march_last_sunday && hour >= 1);
+	} else if (month == 10) {
+		is_dst = (day < october_last_sunday) ||
+			 (day == october_last_sunday && hour < 1);
+	}
+
+	return is_dst ? 7200 : 3600;
+}
+
 static k_tid_t sensor_pub_id;
 
 static struct k_work config_work;
@@ -236,9 +273,10 @@ static void config_work_handler(struct k_work *work) {
 			} else {
 				// Fallback: timestamp-based filename for legacy flows
 				uint64_t micros_ts = micros();
-				time_t seconds = (time_t)(micros_ts / 1000000ULL);
+				time_t seconds_utc = (time_t)(micros_ts / 1000000ULL);
+				time_t seconds_local = seconds_utc + berlin_utc_offset_seconds(seconds_utc);
 				struct tm tm_buf;
-				struct tm *tm_ptr = gmtime_r(&seconds, &tm_buf);
+				struct tm *tm_ptr = gmtime_r(&seconds_local, &tm_buf);
 				char timestr[64] = {0};
 				if (tm_ptr) {
 					snprintf(timestr, sizeof(timestr), "%02d-%02d-%04d_%02d-%02d-%02d",
@@ -249,7 +287,7 @@ static void config_work_handler(struct k_work *work) {
 							 tm_ptr->tm_min,
 							 tm_ptr->tm_sec);
 				} else {
-					snprintf(timestr, sizeof(timestr), "%llu", (unsigned long long)seconds);
+					snprintf(timestr, sizeof(timestr), "%llu", (unsigned long long)seconds_local);
 				}
 				filename = std::string("recording_") + timestr;
 			}
