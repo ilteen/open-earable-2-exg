@@ -10,7 +10,7 @@ ExG ExG::sensor;
 AD7124* ExG::adc = nullptr;
 
 static struct sensor_msg msg_exg;
-
+// (614400/(32))/250 = x
 // samples per second: 614400/(32*x) where x is the samplesPerSecondVal
 const SampleRateSetting<10> ExG::sample_rates = {
     {384, 320, 192, 160, 96, 75, 60, 38, 19, 1},                            // reg_vals (FS values)
@@ -99,6 +99,19 @@ bool ExG::init(struct k_msgq* queue) {
 }
 
 void ExG::update_sensor(struct k_work* work) {
+    ARG_UNUSED(work);
+
+    /*
+     * Wait for a fresh conversion before reading the data register.
+     * Without this, the firmware can re-read stale ADC data and emit
+     * identical plateau segments into the recorded signal.
+     */
+    int wait_ret = adc->waitForConvReady(sensor.conversion_timeout_ms);
+    if (wait_ret != 0) {
+        LOG_WRN("ExG conversion ready timeout/error: %d", wait_ret);
+        return;
+    }
+
     // Read voltage and convert to microvolts (µV)
     // InAmp gain = 50 (as per hardware design)
     const float INAMP_GAIN = 50.0f;
@@ -114,8 +127,8 @@ void ExG::update_sensor(struct k_work* work) {
 
     memcpy(msg_exg.data.data, &voltage_microvolts, sizeof(float));
 
-    int ret = k_msgq_put(sensor_queue, &msg_exg, K_NO_WAIT);
-    if (ret) {
+    int queue_ret = k_msgq_put(sensor_queue, &msg_exg, K_NO_WAIT);
+    if (queue_ret) {
         LOG_WRN("sensor msg queue full");
     }
 }
@@ -131,13 +144,20 @@ void ExG::start(int sample_rate_idx) {
     uint16_t fs_val = sample_rates.reg_vals[sample_rate_idx];
     adc->setFilter(0, AD7124::FilterType::SINC4, fs_val, false);
 
+    uint32_t period_us = (uint32_t)(1000000.0f / sample_rates.true_sample_rates[sample_rate_idx]);
+    sensor.conversion_timeout_ms = ((period_us + 999U) / 1000U) + 2U;
+    if (sensor.conversion_timeout_ms < 2U) {
+        sensor.conversion_timeout_ms = 2U;
+    }
+
     // Calculate timer period
-    k_timeout_t t = K_USEC(1e6 / sample_rates.true_sample_rates[sample_rate_idx]);
+    k_timeout_t t = K_USEC(period_us);
 
     k_timer_start(&sensor.sensor_timer, K_NO_WAIT, t);
 
     _running = true;
-    LOG_INF("ExG sensor started at %.1f SPS", sample_rates.true_sample_rates[sample_rate_idx]);
+    LOG_INF("ExG sensor started at %.1f SPS",
+        (double)sample_rates.true_sample_rates[sample_rate_idx]);
 }
 
 void ExG::stop() {

@@ -29,6 +29,7 @@ private:
     static void update_sensor(struct k_work *work);
 
     bool _active = false;
+    uint32_t conversion_timeout_ms = 10U;
 };
 
 #endif // _EXG_H
