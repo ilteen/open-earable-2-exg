@@ -13,6 +13,7 @@ datas += collect_data_files('bleak')
 hiddenimports += collect_submodules('PyQt6.QtCore')
 hiddenimports += collect_submodules('PyQt6.QtGui')
 hiddenimports += collect_submodules('PyQt6.QtWidgets')
+hiddenimports += collect_submodules('scipy.signal')
 hiddenimports += ['PyQt6.sip']
 
 
@@ -25,7 +26,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision', 'tensorflow', 'scipy', 'IPython', 'jupyter', 'notebook', 'sympy', 'PyQt5', 'PySide2', 'PySide6'],
+    excludes=['torch', 'torchvision', 'tensorflow', 'IPython', 'jupyter', 'notebook', 'sympy', 'PyQt5', 'PySide2', 'PySide6'],
     noarchive=False,
     optimize=0,
 )

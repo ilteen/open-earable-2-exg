@@ -22,6 +22,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 
 APP_NAME = "OpenEarableTools"
 SCRIPT_NAME = "time_sync.py"
@@ -54,7 +55,18 @@ def clean_build_dirs(script_dir):
         dirpath = os.path.join(script_dir, dirname)
         if os.path.exists(dirpath):
             print(f"Removing {dirname}/ directory...")
-            shutil.rmtree(dirpath)
+            last_err = None
+            for _ in range(5):
+                try:
+                    shutil.rmtree(dirpath)
+                    last_err = None
+                    break
+                except OSError as e:
+                    last_err = e
+                    # macOS can transiently report ENOTEMPTY while deleting app bundles.
+                    time.sleep(0.2)
+            if last_err is not None and os.path.exists(dirpath):
+                raise last_err
 
 
 def build_app():
@@ -78,7 +90,6 @@ def build_app():
         print("Building for macOS (.app) using spec file...")
         args = [
             sys.executable, "-m", "PyInstaller",
-            "--clean",
             "--noconfirm",
             spec_path
         ]
@@ -86,7 +97,6 @@ def build_app():
         print("Building for Windows (.exe) using spec file...")
         args = [
             sys.executable, "-m", "PyInstaller",
-            "--clean",
             "--noconfirm",
             spec_path_windows
         ]
@@ -119,7 +129,6 @@ def build_app():
             "--exclude-module", "torch",
             "--exclude-module", "torchvision", 
             "--exclude-module", "tensorflow",
-            "--exclude-module", "scipy",
             "--exclude-module", "IPython",
             "--exclude-module", "jupyter", 
             "--exclude-module", "notebook",
