@@ -127,7 +127,7 @@ void PowerManager::power_good_callback(const struct device *dev, struct gpio_cal
         power_manager.last_charging_state = 0;
         k_work_schedule(&charge_ctrl_delayable, K_NO_WAIT);
     } else {
-        k_work_cancel_delayable(&charge_ctrl_delayable);
+        k_work_schedule(&charge_ctrl_delayable, K_NO_WAIT);
         if (!power_manager.power_on) k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
     }
 }
@@ -214,6 +214,7 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
             LOG_INF("charging state: charging");
 
             if (bat.SYSDWN) {
+                LOG_WRN("Charging reported as PRECHARGING because fuel gauge still asserts SYSDWN");
                 msg.charging_state = PRECHARGING;
                 break;
             }
@@ -344,9 +345,22 @@ int PowerManager::begin() {
     NRF_RESET->RESETREAS = 0xFFFFFFFF;
     
     if (reset_reas & RESET_RESETREAS_RESETPIN_Msk) {
-        oe_boot_state.manual_reset = true;
-        oe_boot_state.timer_reset = bat_state & (1 << 4);
-        power_on |= oe_boot_state.timer_reset;
+        /*
+         * Distinguish explicit button/timer reset from other pin resets:
+         * - timer_reset bit set  -> manual reset (clear persisted runtime state)
+         * - timer_reset bit clear -> keep persisted schedule/time (recovery reset)
+         */
+        oe_boot_state.timer_reset = ((bat_state & (1 << 4)) != 0);
+        oe_boot_state.manual_reset = oe_boot_state.timer_reset;
+
+        if (oe_boot_state.manual_reset) {
+            LOG_INF("Pin reset with timer/button marker: treating as manual reset");
+        } else {
+            LOG_INF("Pin reset without timer/button marker: preserving persisted runtime state");
+        }
+
+        /* Never power off immediately after a pin reset; allow boot recovery logic to run. */
+        power_on = true;
     }
 
     /*if (reset_reas & RESET_RESETREAS_DOG1_Msk) {
@@ -420,13 +434,21 @@ int PowerManager::begin() {
         oe_state.charging_state = DISCHARGING;
     }
 
-    if (!power_on) return power_down();
+    if (!power_on) {
+        LOG_WRN("Boot power-down gate hit (charging=%d, manual_reset=%d, timer_reset=%d)",
+                charging, oe_boot_state.manual_reset, oe_boot_state.timer_reset);
+        return power_down();
+    }
 
     //TODO: check power on condition
     // either not charging and edv1 or charging and edv0 and temperature
     
     battery_controller.set_power_connect_callback(power_good_callback);
-    fuel_gauge.set_int_callback(fuel_gauge_callback);
+    /*
+     * Use periodic polling for fuel gauge updates instead of GPOUT IRQ.
+     * This avoids reset-line glitches seen on some hardware during long idle waits.
+     */
+    // fuel_gauge.set_int_callback(fuel_gauge_callback);
     //battery_controller.set_int_callback(battery_controller_callback);
 
     //float voltage = battery_controller.read_ldo_voltage();
@@ -461,7 +483,8 @@ int PowerManager::begin() {
         //return ret;
     }
 
-    // check if fuel gauge has wrong value
+    // Only use the public capacity estimate here. Direct BQ27220 data-memory reads
+    // during normal boot proved unreliable and could falsely trigger reconfiguration.
     float capacity = fuel_gauge.capacity();
     if (abs(capacity - _battery_settings.capacity) > 1e-4) {
         fuel_gauge.setup(_battery_settings);
@@ -486,6 +509,7 @@ int PowerManager::begin() {
 #endif
 
     state_indicator.init(oe_state);
+    k_work_reschedule(&charge_ctrl_delayable, K_NO_WAIT);
 
     uint32_t device_id[2];
 
@@ -729,39 +753,18 @@ int PowerManager::power_down(bool fault) {
 
 
 void PowerManager::charge_task() {
-    uint16_t charging_state = battery_controller.read_charging_state() >> 6;
-
-    //LOG_INF("Charger Watchdog ...................");
-
-    if (last_charging_state == 0) {
-        LOG_INF("Setting up charge controller ........");
-        battery_controller.setup(_battery_settings);
-        battery_controller.enable_charge();
+    /*
+     * Charger maintenance is only needed while external power is present.
+     * Avoid poking BQ25120a during battery-only standby to prevent noisy
+     * high-impedance I2C read errors.
+     */
+    if (battery_controller.power_connected()) {
+        battery_controller.kick_watchdog();
+    } else {
+        last_charging_state = 0;
     }
 
-    //if (last_charging_state != charging_state ||  ) {
-        k_work_submit(&fuel_gauge_work);
-        //state_inidicator.set_state()
-        /*switch (charging_state) {
-        case 0:
-            LOG_INF("charging state: ready");
-            break;
-        case 1:
-            LOG_INF("charging state: charging");
-            break;
-        case 2:
-            LOG_INF("charging state: done");
-            break;
-        case 3:
-            LOG_WRN("charging state: fault");
-
-            //battery_controller.setup(_battery_settings);
-            
-            break;
-        }*/
-    //}
-
-    last_charging_state = charging_state;
+    k_work_submit(&fuel_gauge_work);
 }
 
 int cmd_setup_fuel_gauge(const struct shell *shell, size_t argc, const char **argv) {

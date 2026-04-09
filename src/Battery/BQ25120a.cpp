@@ -365,6 +365,18 @@ uint8_t BQ25120a::write_uvlo_ilim(ilim_uvlo param) {
         return status;
 }
 
+void BQ25120a::kick_watchdog()
+{
+        uint8_t status = 0;
+        bool ok = readReg(registers::CHARGE_CTRL, &status, sizeof(status));
+        if (!ok) {
+                return;
+        }
+
+        /* Refresh charger watchdog by rewriting current CHARGE_CTRL value. */
+        writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
+}
+
 void BQ25120a::setup_ts_control() {
         uint8_t ts_fault = 0;
 

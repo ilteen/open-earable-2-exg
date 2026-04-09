@@ -73,6 +73,7 @@ public:
     uint8_t write_termination_control(float mA, bool enable_termination = true);
     ilim_uvlo read_uvlo_ilim();
     uint8_t write_uvlo_ilim(ilim_uvlo param);
+    void kick_watchdog();
     void disable_ts();
     uint8_t write_LDO_voltage_control(float volt);
     float read_ldo_voltage();
