@@ -21,6 +21,8 @@ extern struct k_work_q sensor_work_q;
 
 enum sensor_manager_state get_state();
 
+bool sensor_manager_has_active_output_workload(void);
+
 void init_sensor_manager();
 
 void start_sensor_manager();

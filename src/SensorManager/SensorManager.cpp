@@ -196,6 +196,11 @@ void stop_sensor_manager() {
 	//k_msgq_purge(&config_queue);
 }
 
+bool sensor_manager_has_active_output_workload(void)
+{
+	return !ble_sensors.empty() || !sd_sensors.empty();
+}
+
 EdgeMlSensor * get_sensor(enum sensor_id id) {
 	switch (id) {
 	case ID_IMU:

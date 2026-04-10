@@ -35,6 +35,25 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(power_manager, LOG_LEVEL_DBG);
 
+static constexpr float RECORDING_CHARGE_HEADROOM_MA = 150.0f;
+
+static float get_requested_charge_current_ma(const battery_settings &settings)
+{
+    float requested_current = settings.i_charge;
+
+    if (sensor_manager_has_active_output_workload()) {
+        /*
+         * Active BLE streaming or SD logging adds bursty system load. Reserve
+         * input-current headroom so the BQ25120A does not trip into fault when
+         * sensor workloads start.
+         */
+        requested_current = MIN(requested_current,
+                                MAX(50.0f, settings.i_max - RECORDING_CHARGE_HEADROOM_MA));
+    }
+
+    return requested_current;
+}
+
 //K_TIMER_DEFINE(PowerManager::charge_timer, PowerManager::charge_timer_handler, NULL);
 
 K_WORK_DELAYABLE_DEFINE(PowerManager::charge_ctrl_delayable, PowerManager::charge_ctrl_work_handler);
@@ -531,6 +550,7 @@ bool PowerManager::check_battery() {
 
     if (charging) {
         float voltage = fuel_gauge.voltage();
+        float requested_charge_current = get_requested_charge_current_ma(_battery_settings);
 
         if (voltage < _battery_settings.u_charge_prevent) {
             battery_controller.disable_charge();
@@ -545,11 +565,11 @@ bool PowerManager::check_battery() {
             return false;
         } else if (temp < _battery_settings.temp_fast_min || temp > _battery_settings.temp_fast_max) {
             // set params
-            battery_controller.write_charging_control(_battery_settings.i_charge / 2);
+            battery_controller.write_charging_control(requested_charge_current / 2.0f);
             battery_controller.enable_charge();
         } else {
             // normal params
-            battery_controller.write_charging_control(_battery_settings.i_charge);
+            battery_controller.write_charging_control(requested_charge_current);
             battery_controller.enable_charge();
         }
     }
