@@ -8,11 +8,8 @@ target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_i2s.c)
 # target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_usb.c)
 target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_sync_timer.c)
 
-if(CONFIG_NRF5340_AUDIO_CS47L63_DRIVER AND CONFIG_OPENEARABLE_ADAU1860_ENABLED)
-target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hw_codec_adau1860.cpp)
-else()
-target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hw_codec_stub.c)
-endif()
+target_sources_ifdef(CONFIG_NRF5340_AUDIO_CS47L63_DRIVER app PRIVATE
+                     ${CMAKE_CURRENT_SOURCE_DIR}/hw_codec_adau1860.cpp)
 target_sources_ifdef(CONFIG_NRF5340_AUDIO_POWER_MEASUREMENT app PRIVATE
                      ${CMAKE_CURRENT_SOURCE_DIR}/power_meas.c)
 target_sources_ifdef(CONFIG_NRF5340_AUDIO_SD_CARD_MODULE app PRIVATE

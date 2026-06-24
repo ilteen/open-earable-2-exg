@@ -18,6 +18,7 @@
 #include "macros_common.h"
 #include "openearable_common.h"
 #include "streamctrl.h"
+#include "hw_codec.h"
 
 #include "../src/Battery/PowerManager.h"
 #include "../src/SensorManager/SensorManager.h"
@@ -80,6 +81,7 @@ int main(void) {
 		}
 	}
 
+	disableDSP(true); // DSP is disabled for OpenEarable ExG as we currently don't have the ability to even play audio.
 	streamctrl_start();
 
 	uint32_t sirk = uicr_sirk_get();

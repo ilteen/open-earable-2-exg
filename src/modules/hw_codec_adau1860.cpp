@@ -37,6 +37,12 @@ static struct k_thread volume_msg_sub_thread_data;
 K_THREAD_STACK_DEFINE(volume_msg_sub_thread_stack, CONFIG_VOLUME_MSG_SUB_STACK_SIZE);
 
 static enum audio_mode audio_mode;
+static bool dsp_disabled;
+
+void disableDSP(bool disable)
+{
+	dsp_disabled = disable;
+}
 
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -57,6 +63,9 @@ int hw_codec_set_audio_mode(enum audio_mode mode) {
     int ret;
 
 	audio_mode = mode;
+	if (dsp_disabled) {
+		return 0;
+	}
 
 	settings_save_one("audio/mode", &mode, sizeof(mode));
 
@@ -166,6 +175,10 @@ static void volume_msg_sub_thread(void)
 
 int hw_codec_volume_set(uint8_t set_val)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 	uint32_t volume_reg_val;
 
@@ -199,6 +212,10 @@ int hw_codec_volume_set(uint8_t set_val)
 
 int hw_codec_volume_adjust(int8_t adjustment_db)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 	int32_t new_volume_reg_val;
 
@@ -258,6 +275,10 @@ int hw_codec_volume_increase(void)
 
 int hw_codec_volume_mute(void)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 
 	ret = dac.mute(true);
@@ -269,6 +290,10 @@ int hw_codec_volume_mute(void)
 
 int hw_codec_volume_unmute(void)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 
 	ret = dac.mute(false);
@@ -280,6 +305,10 @@ int hw_codec_volume_unmute(void)
 
 int hw_codec_default_conf_enable(void)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 
 	ret = hw_codec_volume_adjust(0);
@@ -300,6 +329,10 @@ int hw_codec_default_conf_enable(void)
 
 int hw_codec_stop_audio(void)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 
 	ret = dac.mute(true);
@@ -312,6 +345,10 @@ int hw_codec_stop_audio(void)
 
 int hw_codec_soft_reset(void)
 {
+	if (dsp_disabled) {
+		return 0;
+	}
+
 	int ret;
 
 	ret = dac.soft_reset();
@@ -324,6 +361,11 @@ int hw_codec_soft_reset(void)
 
 int hw_codec_init(void)
 {
+	if (dsp_disabled) {
+		LOG_INF("ADAU1860 disabled");
+		return 0;
+	}
+
 	int ret;
 
 	ret = dac.begin();

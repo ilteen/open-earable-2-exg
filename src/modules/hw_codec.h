@@ -7,6 +7,7 @@
 #ifndef _HW_CODEC_H_
 #define _HW_CODEC_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/zbus/zbus.h>
 
@@ -22,6 +23,9 @@ extern "C" {
 #endif
 
 ZBUS_OBS_DECLARE(volume_evt_sub);
+
+/* Must be set before streamctrl_start(). Disables all ADAU1860 access. */
+void disableDSP(bool disable);
 
 /**
  * @brief  Set volume on HW_CODEC

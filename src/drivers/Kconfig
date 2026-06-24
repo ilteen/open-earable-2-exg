@@ -14,14 +14,6 @@ menuconfig NRF5340_AUDIO_CS47L63_DRIVER
 
 if NRF5340_AUDIO_CS47L63_DRIVER
 
-config OPENEARABLE_ADAU1860_ENABLED
-	bool "Enable ADAU1860 hardware codec access"
-	default y
-	help
-	  When disabled, the firmware does not initialize or access the ADAU1860.
-	  This is useful on hardware variants without codec power and prevents
-	  repeated ADAU power-up warnings during boot.
-
 config CS47L63_THREAD_PRIO
 	int "Priority for CS47L63 thread"
 	default 5
