@@ -56,78 +56,71 @@ LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 #include <zephyr/usb/usb_device.h>
 
 int main(void) {
-    int ret;
+	int ret;
 
-    LOG_DBG("nRF5340 APP core started");
+	LOG_DBG("nRF5340 APP core started");
 
-    ret = power_manager.begin();
-    ERR_CHK(ret);
+	ret = power_manager.begin();
+	ERR_CHK(ret);
 
-    uint8_t standalone = uicr_standalone_get();
+	uint8_t standalone = uicr_standalone_get();
 
-    LOG_INF("Standalone mode: %i", standalone);
+	LOG_INF("Standalone mode: %i", standalone);
 
-    /*sdcard_manager.init();
+	/*sdcard_manager.init();
 
-    sdcard_manager.mount();*/
+	sdcard_manager.mount();*/
 
-    /* STEP 5.5 - Enable USB */
-    if (IS_ENABLED(CONFIG_USB_DEVICE_STACK)) {
-        ret = usb_enable(NULL);
-        if (ret) {
-            LOG_ERR("Failed to enable USB");
-            return 0;
-        }
-    }
+	/* STEP 5.5 - Enable USB */
+	if (IS_ENABLED(CONFIG_USB_DEVICE_STACK)) {
+		ret = usb_enable(NULL);
+		if (ret) {
+			LOG_ERR("Failed to enable USB");
+			return 0;
+		}
+	}
 
-    streamctrl_start();
+	streamctrl_start();
 
-    uint32_t sirk = uicr_sirk_get();
+	uint32_t sirk = uicr_sirk_get();
 
-    if (sirk == 0xFFFFFFFFU) {
-        state_indicator.set_pairing_state(SET_PAIRING);
-    } else if (bonded_device_count > 0 && !oe_boot_state.timer_reset) {
-        state_indicator.set_pairing_state(PAIRED);
-    } else {
-        state_indicator.set_pairing_state(BONDING);
-    }
+	if (sirk == 0xFFFFFFFFU) {
+		state_indicator.set_pairing_state(SET_PAIRING);
+	} else if (bonded_device_count > 0 && !oe_boot_state.timer_reset) {
+		state_indicator.set_pairing_state(PAIRED);
+	} else {
+		state_indicator.set_pairing_state(BONDING);
+	}
 
-    init_sensor_manager();
-
-    // sensor_config imu = {ID_IMU, 80, 0};
-    // sensor_config imu = {ID_PPG_right_I2C2, 400, 0};
-    // sensor_config temp = {ID_OPTTEMP, 10, 0};
-    //  sensor_config temp = {ID_BONE_CONDUCTION, 100, 0};
-
-    // config_sensor(&temp);
-
-    // sensor_config ppg = {ID_PPG_right_I2C2, 400, 0};
-    // config_sensor(&ppg);
+	init_sensor_manager();
 
     ret = init_led_service();
-    ERR_CHK(ret);
+	ERR_CHK(ret);
 
-    ret = init_battery_service();
-    ERR_CHK(ret);
+	ret = init_battery_service();
+	ERR_CHK(ret);
 
-    ret = init_button_service();
-    ERR_CHK(ret);
+	ret = init_button_service();
+	ERR_CHK(ret);
 
-    ret = initParseInfoService(&defaultSensorIds, defaultSensors);
-    ERR_CHK(ret);
+	ret = initParseInfoService(&defaultSensorIds, defaultSensors);
+	ERR_CHK(ret);
 
-    ret = init_sensor_service();
-    ERR_CHK(ret);
-    
-    bt_mgmt_conn_interval_init(new ConnIntvlLinear(
-                                                   4,                // linear increase step (8ms units)
-                                                   CONFIG_BLE_ACL_CONN_INTERVAL,
-                                                   CONFIG_BLE_ACL_CONN_INTERVAL_SLOW
-                                                   ));
-    
-    ret = init_time_sync();
-    ERR_CHK(ret);
-    LOG_INF("Time sync service initialized. Sensor start is controlled by GATT sensor config/schedule writes.");
+	ret = init_sensor_service();
+	ERR_CHK(ret);
 
-    return 0;
+	bt_mgmt_conn_interval_init(new ConnIntvlLinear(
+	    4,                // linear increase step (8ms units)
+	    CONFIG_BLE_ACL_CONN_INTERVAL,
+	    CONFIG_BLE_ACL_CONN_INTERVAL_SLOW
+	));
+
+	ret = init_time_sync();
+	ERR_CHK(ret);
+
+	// error test
+	//long *a = nullptr;
+	//*a = 10;
+
+	return 0;
 }
