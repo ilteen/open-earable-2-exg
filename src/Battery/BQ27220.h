@@ -140,8 +140,8 @@ public:
     bool read_operation_state(op_state &state);
     gauge_status gauging_state();
     void write_command(commands command);
-    void enter_config_update();
-    void exit_config_update(bool init = true);
+    bool enter_config_update();
+    bool exit_config_update(bool init = true);
 
     void full_access();
     bool setup(const battery_settings &_battery_settings, bool init = true);

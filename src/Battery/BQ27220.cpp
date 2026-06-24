@@ -227,8 +227,22 @@ float BQ27220::design_cap() {
 }
 
 bool BQ27220::read_design_cap(float &capacity) {
-        uint16_t mAh = 0;
-        if (!readReg(registers::DCAP, (uint8_t *) &mAh, sizeof(mAh))) {
+        uint8_t data[2] = {0};
+        uint16_t ram_address = 0x929F;
+
+        /*
+         * Use the configured data-memory field, not the live DCAP register.
+         * The live register lags and can still report the old profile during boot.
+         */
+        writeReg(0x3E, (uint8_t *)&ram_address, sizeof(ram_address));
+        k_usleep(BQ27220_RAM_TIMEOUT_US);
+        if (!readReg(0x40, data, sizeof(data))) {
+                capacity = 0.0f;
+                return false;
+        }
+
+        uint16_t mAh = ((uint16_t)data[0] << 8) | data[1];
+        if (mAh < 100U || mAh > 10000U || mAh == 0xFFFFU) {
                 capacity = 0.0f;
                 return false;
         }
@@ -310,40 +324,49 @@ void BQ27220::active_mode() {
 
 }*/
 
-void BQ27220::enter_config_update() {
+bool BQ27220::enter_config_update() {
     //write_command(0x14); //0x13);
     op_state state = operation_state();
     if (state.CFG_UPDATE) {
         LOG_WRN("Already in CONFIG UPDATE MODE.");
-        return;
+        return true;
     }
     write_command(CONFIG_UPDATE_ENTER);
     k_msleep(1100);
-    do {
+    for (int i = 0; i < 20; ++i) {
         state = operation_state();
+        if (state.CFG_UPDATE) {
+            LOG_INF("CONFIG UPDATE MODE entered.");
+            return true;
+        }
         k_msleep(100);
-    } 
-    while (!state.CFG_UPDATE);
-    LOG_INF("CONFIG UPDATE MODE entered.");
+    }
+    LOG_ERR("Timed out entering CONFIG UPDATE MODE");
+    return false;
 
     //if (state.CFG_UPDATE) printk("CONFIG UPDATE MODE entered.\n");
     //else printk("Failed to enter CONFIG UPDATE MODE.\n");
 }
 
-void BQ27220::exit_config_update(bool init) {
+bool BQ27220::exit_config_update(bool init) {
     op_state state = operation_state();
     if (!state.CFG_UPDATE) {
         LOG_WRN("Device is not in CONFIG UPDATE MODE.");
-        return;
+        return true;
     }
     if (init) write_command(CONFIG_UPDATE_EXIT);
     else write_command(CONFIG_UPDATE_EXIT_NO_INIT);
     k_msleep(1100);
-    do {
+    for (int i = 0; i < 20; ++i) {
         state = operation_state();
+        if (!state.CFG_UPDATE) {
+            LOG_INF("CONFIG UPDATE MODE exited.");
+            return true;
+        }
         k_msleep(100);
-    } while (state.CFG_UPDATE);
-    LOG_INF("CONFIG UPDATE MODE exited.");
+    }
+    LOG_ERR("Timed out exiting CONFIG UPDATE MODE");
+    return false;
     //if (!state.CFG_UPDATE) printk("CONFIG UPDATE MODE exited.\n");
     //else printk("Failed to exit CONFIG UPDATE MODE.\n");
 }
@@ -425,7 +448,7 @@ bool BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         // full access
         full_access();
 
-        enter_config_update();
+        if (!enter_config_update()) return false;
         //k_usleep(1000);
 
         //hibernate off (not supported by fuel gauge)
@@ -562,22 +585,21 @@ bool BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         ret = write_RAM(0x9272, 3700);
         if (ret != 0) return false;
 
-        exit_config_update(init);
-
-        // put fuel gauge to sealed state
-        write_command(SEAL);
-
         float design_capacity = 0.0f;
         if (!read_design_cap(design_capacity)) {
-                LOG_ERR("Fuel gauge setup finished, but design capacity readback failed");
+                LOG_ERR("Fuel gauge setup verification failed: unable to read design capacity from data memory");
                 return false;
         }
-
         if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
-                LOG_ERR("Fuel gauge setup verification failed: expected %.0f mAh, got %.0f mAh",
+                LOG_ERR("Fuel gauge setup verification failed: expected %.0f mAh in data memory, got %.0f mAh",
                         (double)_battery_settings.capacity, (double)design_capacity);
                 return false;
         }
+
+        if (!exit_config_update(init)) return false;
+
+        // put fuel gauge to sealed state
+        write_command(SEAL);
 
         LOG_INF("Fuel gauge design capacity verified at %.0f mAh", (double)design_capacity);
         return true;

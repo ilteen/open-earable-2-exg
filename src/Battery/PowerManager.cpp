@@ -320,14 +320,24 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
             msg.charging_state = FULLY_CHARGED;
             break;
         case 3:
-            LOG_WRN("charging state: fault");
-            msg.charging_state = FAULT;
-
             uint8_t fault = battery_controller.read_fault();
+            uint8_t ts_fault = battery_controller.read_ts_fault();
+            bool charger_fault_active = (fault & 0xF0) != 0;
+            bool ts_fault_active = ((ts_fault >> 5) & 0x7) != 0;
             // Battery fuel gauge status
             bat_status status = fuel_gauge.battery_status();
             voltage = fuel_gauge.voltage();
             current = fuel_gauge.current();
+            bool power_connected = battery_controller.power_connected();
+
+            if (!charger_fault_active && !ts_fault_active && power_connected && current > 0.5f * power_manager._battery_settings.i_term) {
+                LOG_WRN("charging state reported fault without fault bits; treating as charging");
+                msg.charging_state = CHARGING;
+                break;
+            }
+
+            LOG_WRN("charging state: fault");
+            msg.charging_state = FAULT;
 
             // cleared after read
             if (fault & (1 << 4)) {
@@ -336,7 +346,6 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
 
             // as long as fault exists
             if (fault & (1 << 5)) {
-                bool power_connected = battery_controller.power_connected();
                 if (power_connected && current > 0.5 * power_manager._battery_settings.i_term) {
                     msg.charging_state = PRECHARGING;
                 }
@@ -352,8 +361,6 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
             if (fault & (1 << 7)) {
                 LOG_WRN("Battery over voltage");
             }
-
-            uint8_t ts_fault = battery_controller.read_ts_fault();
 
             if ((ts_fault >> 5) & 0x7) {
                 LOG_WRN("TS_ENABLED: %i, TS FAULT: %i", ts_fault >> 7, (ts_fault >> 5) & 0x3);
