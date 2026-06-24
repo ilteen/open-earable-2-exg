@@ -6,6 +6,7 @@
 #include <zephyr/sys/poweroff.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/toolchain/common.h>
 
 #include <zephyr/pm/pm.h>
 #include <zephyr/pm/state.h>
@@ -37,6 +38,29 @@ LOG_MODULE_REGISTER(power_manager, LOG_LEVEL_DBG);
 
 static constexpr float RECORDING_CHARGE_HEADROOM_MA = 150.0f;
 
+#define INTENTIONAL_POWER_OFF_MAGIC 0x504F4646U /* "POFF" */
+
+struct retained_power_off_state {
+    uint32_t magic;
+    uint32_t inverted_magic;
+};
+
+static struct retained_power_off_state retained_power_off __noinit;
+
+static void mark_intentional_power_off(void)
+{
+    retained_power_off.magic = INTENTIONAL_POWER_OFF_MAGIC;
+    retained_power_off.inverted_magic = ~INTENTIONAL_POWER_OFF_MAGIC;
+}
+
+static bool consume_intentional_power_off(void)
+{
+    bool valid = retained_power_off.magic == INTENTIONAL_POWER_OFF_MAGIC &&
+                 retained_power_off.inverted_magic == ~INTENTIONAL_POWER_OFF_MAGIC;
+    retained_power_off = {};
+    return valid;
+}
+
 static float get_requested_charge_current_ma(const battery_settings &settings)
 {
     float requested_current = settings.i_charge;
@@ -52,6 +76,29 @@ static float get_requested_charge_current_ma(const battery_settings &settings)
     }
 
     return requested_current;
+}
+
+static bool fuel_gauge_shutdown_confirmed(const battery_settings &settings)
+{
+    k_msleep(10);
+
+    bat_status status = {};
+    float voltage = 0.0f;
+    if (!fuel_gauge.read_battery_status(status) || !fuel_gauge.read_voltage(voltage)) {
+        LOG_WRN("Unable to confirm battery shutdown condition; keeping device on");
+        return false;
+    }
+
+    const float threshold = settings.u_vlo + 0.05f;
+    if (status.SYSDWN && voltage < threshold) {
+        LOG_WRN("Battery shutdown confirmed at %.3f V (threshold %.3f V)",
+                (double)voltage, (double)threshold);
+        return true;
+    }
+
+    LOG_WRN("Ignoring transient/early SYSDWN at %.3f V (shutdown threshold %.3f V)",
+            (double)voltage, (double)threshold);
+    return false;
 }
 
 //K_TIMER_DEFINE(PowerManager::charge_timer, PowerManager::charge_timer_handler, NULL);
@@ -186,22 +233,24 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
 
     msg.battery_level = fuel_gauge.state_of_charge();
 
-    bat_status bat = fuel_gauge.battery_status();
+    bat_status bat = {};
+    bool battery_status_valid = fuel_gauge.read_battery_status(bat);
 
     power_manager.get_battery_status(status);
 
     // full discharge
     //if (bat.FD) k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
-    if (power_manager.power_on && bat.SYSDWN) {
-        LOG_WRN("Battery reached system down voltage.");
+    if (power_manager.power_on && battery_status_valid && bat.SYSDWN &&
+        fuel_gauge_shutdown_confirmed(power_manager._battery_settings)) {
         k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
     }
 
-    if (bat.CHGINH) {
+    if (battery_status_valid && bat.CHGINH) {
         power_manager.charging_disabled = true;
         battery_controller.disable_charge();
-    } else if (power_manager.charging_disabled) {
+    } else if (battery_status_valid && power_manager.charging_disabled) {
         battery_controller.enable_charge();
+        power_manager.charging_disabled = false;
     }
 
     float current;
@@ -232,7 +281,7 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
         case 1:
             LOG_INF("charging state: charging");
 
-            if (bat.SYSDWN) {
+            if (battery_status_valid && bat.SYSDWN) {
                 LOG_WRN("Charging reported as PRECHARGING because fuel gauge still asserts SYSDWN");
                 msg.charging_state = PRECHARGING;
                 break;
@@ -358,6 +407,8 @@ int PowerManager::begin() {
     // get reset reason
     uint32_t reset_reas = NRF_RESET->RESETREAS;
     log_reset_reason(reset_reas);
+    bool intentional_power_off_reset = consume_intentional_power_off() &&
+                                       (reset_reas & RESET_RESETREAS_SREQ_Msk);
     oe_boot_state.manual_reset = false;
 
     // reset the reset reason
@@ -386,7 +437,10 @@ int PowerManager::begin() {
         printk("Reset durch Watchdog-Timer\n");
     }*/
 
-    if (keep_power_on_after_reset(reset_reas)) {
+    if (intentional_power_off_reset) {
+        LOG_INF("Intentional power-off reset detected; entering charging-only mode");
+        power_on = false;
+    } else if (keep_power_on_after_reset(reset_reas)) {
         LOG_WRN("Runtime reset detected, keeping power_on state active");
         power_on = true;
     }
@@ -399,10 +453,26 @@ int PowerManager::begin() {
     battery_controller.set_int_callback(battery_controller_callback);
 
     // check setup
-    op_state state = fuel_gauge.operation_state();
-    if (state.SEC != BQ27220::SEALED) {
+    op_state state = {};
+    bool gauge_reconfigured = false;
+    if (!fuel_gauge.read_operation_state(state)) {
+        LOG_WRN("Unable to read fuel gauge operation state; skipping reconfiguration");
+    } else if (state.SEC != BQ27220::SEALED) {
         //battery_controller.setup();
         fuel_gauge.setup(_battery_settings);
+        gauge_reconfigured = true;
+    }
+
+    /* Apply a different battery profile before charger work can access the gauge. */
+    if (!gauge_reconfigured) {
+        float design_capacity = 0.0f;
+        if (!fuel_gauge.read_design_cap(design_capacity)) {
+            LOG_WRN("Unable to read fuel gauge design capacity; skipping reconfiguration");
+        } else if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
+            LOG_INF("Fuel gauge design capacity %.0f mAh differs from firmware value %.0f mAh; reconfiguring",
+                    (double)design_capacity, (double)_battery_settings.capacity);
+            fuel_gauge.setup(_battery_settings);
+        }
     }
 
     //k_timer_init(&charge_timer, charge_timer_handler, NULL);
@@ -502,14 +572,6 @@ int PowerManager::begin() {
         //return ret;
     }
 
-    // Only use the public capacity estimate here. Direct BQ27220 data-memory reads
-    // during normal boot proved unreliable and could falsely trigger reconfiguration.
-    float capacity = fuel_gauge.capacity();
-    if (abs(capacity - _battery_settings.capacity) > 1e-4) {
-        fuel_gauge.setup(_battery_settings);
-        set_error_led();
-    }
-
 #ifdef CONFIG_BOOTLOADER_MCUBOOT
     bool img_confirmed = boot_is_img_confirmed();
 
@@ -549,46 +611,38 @@ bool PowerManager::check_battery() {
     bool charging = battery_controller.power_connected();
 
     if (charging) {
-        float voltage = fuel_gauge.voltage();
-        float requested_charge_current = get_requested_charge_current_ma(_battery_settings);
-
-        if (voltage < _battery_settings.u_charge_prevent) {
-            battery_controller.disable_charge();
-            return false;
-        }
-
-        float temp = fuel_gauge.temperature();
-        
-        if (temp < _battery_settings.temp_min || temp > _battery_settings.temp_max) {
-            // set params
-            battery_controller.disable_charge();
-            return false;
-        } else if (temp < _battery_settings.temp_fast_min || temp > _battery_settings.temp_fast_max) {
-            // set params
-            battery_controller.write_charging_control(requested_charge_current / 2.0f);
-            battery_controller.enable_charge();
+        float voltage = 0.0f;
+        float temp = 0.0f;
+        if (!fuel_gauge.read_voltage(voltage) || !fuel_gauge.read_temperature(temp)) {
+            LOG_WRN("Unable to read battery voltage/temperature; preserving charger state");
         } else {
-            // normal params
-            battery_controller.write_charging_control(requested_charge_current);
-            battery_controller.enable_charge();
+            float requested_charge_current = get_requested_charge_current_ma(_battery_settings);
+
+            if (voltage < _battery_settings.u_charge_prevent) {
+                battery_controller.disable_charge();
+                return false;
+            }
+
+            if (temp < _battery_settings.temp_min || temp > _battery_settings.temp_max) {
+                // set params
+                battery_controller.disable_charge();
+                return false;
+            } else if (temp < _battery_settings.temp_fast_min || temp > _battery_settings.temp_fast_max) {
+                // set params
+                battery_controller.write_charging_control(requested_charge_current / 2.0f);
+                battery_controller.enable_charge();
+            } else {
+                // normal params
+                battery_controller.write_charging_control(requested_charge_current);
+                battery_controller.enable_charge();
+            }
         }
     }
 
-    bat_status bs = fuel_gauge.battery_status();
-    if (bs.SYSDWN) {
-        /* Confirm SYSDWN and cross-check with voltage to avoid false shutdowns. */
-        k_msleep(10);
-        bat_status bs_confirm = fuel_gauge.battery_status();
-        float voltage = fuel_gauge.voltage();
-        float sysdwn_guard_v = _battery_settings.u_vlo + 0.05f;
-
-        if (bs_confirm.SYSDWN && voltage < sysdwn_guard_v) {
-            LOG_WRN("Battery SYSDWN confirmed at %.3f V (threshold %.3f V)", voltage, sysdwn_guard_v);
-            return false;
-        }
-
-        LOG_WRN("Ignoring transient/contradicting SYSDWN (voltage %.3f V, threshold %.3f V)",
-                voltage, sysdwn_guard_v);
+    bat_status bs = {};
+    if (fuel_gauge.read_battery_status(bs) && bs.SYSDWN &&
+        fuel_gauge_shutdown_confirmed(_battery_settings)) {
+        return false;
     }
 
     //gauge_status gs = fuel_gauge.gauging_state();
@@ -740,6 +794,7 @@ int PowerManager::power_down(bool fault) {
 	gpio_pin_set_dt(&error_led, 0);
 
     if (charging) {
+        mark_intentional_power_off();
         //NVIC_SystemReset();
         sys_reboot(SYS_REBOOT_COLD);
         return 0;
@@ -779,12 +834,21 @@ void PowerManager::charge_task() {
      * high-impedance I2C read errors.
      */
     if (battery_controller.power_connected()) {
-        battery_controller.kick_watchdog();
+        check_battery();
     } else {
         last_charging_state = 0;
     }
 
     k_work_submit(&fuel_gauge_work);
+}
+
+void PowerManager::refresh_charging() {
+    /*
+     * This 
+     */
+    if (battery_controller.power_connected()) {
+        k_work_reschedule(&charge_ctrl_delayable, K_NO_WAIT);
+    }
 }
 
 int cmd_setup_fuel_gauge(const struct shell *shell, size_t argc, const char **argv) {

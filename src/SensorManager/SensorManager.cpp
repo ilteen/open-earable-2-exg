@@ -29,6 +29,7 @@
 #include <set>
 
 #include "audio_datapath.h"
+#include "PowerManager.h"
 
 #include <sensor_service.h>
 
@@ -156,9 +157,6 @@ void start_sensor_manager() {
 	k_msgq_purge(&sensor_queue);
 	k_work_queue_unplug(&sensor_work_q);
 
-	ble_sensors.clear();
-	sd_sensors.clear();
-
 	if (_state == INIT) {
 		k_thread_start(sensor_pub_id);
 	}
@@ -188,6 +186,8 @@ void stop_sensor_manager() {
 	ExG::sensor.stop();
 
 	active_sensors = 0;
+	ble_sensors.clear();
+	sd_sensors.clear();
 
 	k_work_queue_drain(&sensor_work_q, true);
 
@@ -352,6 +352,9 @@ static void config_work_handler(struct k_work *work) {
 	set_sensor_config_status(config);
 
 	if (active_sensors == 0) stop_sensor_manager();
+
+	/* This readjusts the charging current if sensors are turned on/off to prevent charging faults */
+	power_manager.refresh_charging();
 
 	/*
 	 * Multiple config_sensor() calls can happen back-to-back (e.g. scheduled EXG + companion PPGs).

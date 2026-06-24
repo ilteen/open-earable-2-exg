@@ -94,9 +94,17 @@ void BQ27220::writeReg(uint8_t reg, uint8_t *buffer, uint16_t len) {
 }
 
 bat_status BQ27220::battery_status() {
-        bat_status status;
+        bat_status status = {};
+        read_battery_status(status);
+        return status;
+}
+
+bool BQ27220::read_battery_status(bat_status &status) {
+        status = {};
         uint16_t val = 0;
-        bool ret = readReg(registers::FLAGS, (uint8_t *) &val, sizeof(val));
+        if (!readReg(registers::FLAGS, (uint8_t *) &val, sizeof(val))) {
+                return false;
+        }
 
         status.DSG = val & 0x1;
         status.SYSDWN = val & (1 << 1);
@@ -114,17 +122,19 @@ bat_status BQ27220::battery_status() {
         status.OCVCOMP = val & (1 << 14);
         status.FD = val & (1 << 15);
 
-        return status;
+        return true;
 }
 
 gauge_status BQ27220::gauging_state() {
-        gauge_status status;
+        gauge_status status = {};
 
-        uint16_t state;
+        uint16_t state = 0;
 
         uint16_t command = GAUGING_STATUS;
         writeReg(0x3E, (uint8_t *) &command, sizeof(command));
-        readReg(0x40, (uint8_t *) &state, sizeof(state));
+        if (!readReg(0x40, (uint8_t *) &state, sizeof(state))) {
+                return status;
+        }
 
         status.edv2 = state & (1 << 6);
         status.edv1 = state & (1 << 5);
@@ -134,19 +144,37 @@ gauge_status BQ27220::gauging_state() {
 }
 
 float BQ27220::temperature() {
-        uint16_t temp_K = 0;
-        bool ret = readReg(registers::TEMP, (uint8_t *) &temp_K, sizeof(temp_K));
+        float temperature = 0.0f;
+        read_temperature(temperature);
+        return temperature;
+}
 
-        float temp = temp_K / 10.0 - 273.15;
-        return temp;
+bool BQ27220::read_temperature(float &temperature) {
+        uint16_t temp_K = 0;
+        if (!readReg(registers::TEMP, (uint8_t *) &temp_K, sizeof(temp_K))) {
+                temperature = 0.0f;
+                return false;
+        }
+
+        temperature = temp_K / 10.0f - 273.15f;
+        return true;
 }
 
 float BQ27220::voltage() {
-        uint16_t mV = 0;
-        bool ret = readReg(registers::VOLT, (uint8_t *) &mV, sizeof(mV));
+        float voltage = 0.0f;
+        read_voltage(voltage);
+        return voltage;
+}
 
-        float v = mV / 1000.0;
-        return v;
+bool BQ27220::read_voltage(float &voltage) {
+        uint16_t mV = 0;
+        if (!readReg(registers::VOLT, (uint8_t *) &mV, sizeof(mV))) {
+                voltage = 0.0f;
+                return false;
+        }
+
+        voltage = mV / 1000.0f;
+        return true;
 }
 
 float BQ27220::capacity() {
@@ -193,9 +221,20 @@ float BQ27220::average_current() {
 }
 
 float BQ27220::design_cap() {
+        float capacity = 0.0f;
+        read_design_cap(capacity);
+        return capacity;
+}
+
+bool BQ27220::read_design_cap(float &capacity) {
         uint16_t mAh = 0;
-        bool ret = readReg(registers::DCAP, (uint8_t *) &mAh, sizeof(mAh));
-        return mAh;
+        if (!readReg(registers::DCAP, (uint8_t *) &mAh, sizeof(mAh))) {
+                capacity = 0.0f;
+                return false;
+        }
+
+        capacity = mAh;
+        return true;
 }
 
 float BQ27220::remaining_cap() {
@@ -224,9 +263,17 @@ float  BQ27220::standby_current() {
 }
 
 op_state BQ27220::operation_state() {
-        op_state state;
+        op_state state = {};
+        read_operation_state(state);
+        return state;
+}
+
+bool BQ27220::read_operation_state(op_state &state) {
+        state = {};
         uint16_t status = 0;
-        bool ret = readReg(registers::OP_STAT, (uint8_t *) &status, sizeof(status));
+        if (!readReg(registers::OP_STAT, (uint8_t *) &status, sizeof(status))) {
+                return false;
+        }
         
         state.CALD = status & 0x01;
         state.SEC = (status >> 1) & 0x3;
@@ -237,7 +284,7 @@ op_state BQ27220::operation_state() {
         state.BTPINT = status & 0x80;
         state.CFG_UPDATE = status & 0x400;
 
-        return state;
+        return true;
 }
 
 void BQ27220::write_command(BQ27220::commands cmd) {

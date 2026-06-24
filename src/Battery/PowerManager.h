@@ -24,6 +24,8 @@ public:
 
     void reboot();
 
+    void refresh_charging();
+
     void get_battery_status(battery_level_status &status);
     void get_energy_status(battery_energy_status &status);
     void get_health_status(battery_health_status &status);

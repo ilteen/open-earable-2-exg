@@ -365,18 +365,6 @@ uint8_t BQ25120a::write_uvlo_ilim(ilim_uvlo param) {
         return status;
 }
 
-void BQ25120a::kick_watchdog()
-{
-        uint8_t status = 0;
-        bool ok = readReg(registers::CHARGE_CTRL, &status, sizeof(status));
-        if (!ok) {
-                return;
-        }
-
-        /* Refresh charger watchdog by rewriting current CHARGE_CTRL value. */
-        writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
-}
-
 void BQ25120a::setup_ts_control() {
         uint8_t ts_fault = 0;
 
@@ -417,12 +405,12 @@ void BQ25120a::enable_charge() {
 
 
 button_state BQ25120a::read_button_state() {
-        struct button_state btn;
+        struct button_state btn = {};
 
         uint8_t status = 0;
-        bool ret = readReg(registers::BTN_CTRL, (uint8_t *) &status, sizeof(status));
-
-        // if (!ret) printk("failed to read\n");
+        if (!readReg(registers::BTN_CTRL, (uint8_t *) &status, sizeof(status))) {
+                return btn;
+        }
 
         btn.wake_1 = status & 0x2;
         btn.wake_2 = status & 0x1;

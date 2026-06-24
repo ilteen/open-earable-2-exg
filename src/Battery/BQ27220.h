@@ -118,8 +118,11 @@ public:
     int begin();
 
     bat_status battery_status();
+    bool read_battery_status(bat_status &status);
     float temperature();
+    bool read_temperature(float &temperature);
     float voltage();
+    bool read_voltage(float &voltage);
     float capacity();
     float time_to_full();
     float time_to_empty();
@@ -128,11 +131,13 @@ public:
     float current();
     float average_current();
     float design_cap();
+    bool read_design_cap(float &capacity);
     float remaining_cap();
     float charge_current();
     int cycle_count();
     float standby_current();
     op_state operation_state();
+    bool read_operation_state(op_state &state);
     gauge_status gauging_state();
     void write_command(commands command);
     void enter_config_update();
