@@ -43,6 +43,7 @@ int sensor_service_set_recording_name(const char *name);
 int sensor_service_schedule_start(uint8_t sensor_id, uint8_t sample_rate_index, uint8_t storage_options,
 				  uint64_t start_time_us);
 int sensor_service_schedule_exg_start(uint8_t sample_rate_index, uint64_t start_time_us);
+void sensor_service_prepare_manual_power_off(void);
 
 void temp_disable_notifies(bool disable);
 

@@ -62,6 +62,10 @@ static char scheduled_recording_name[MAX_SENSOR_REC_NAME_LENGTH] = "recording_";
 #define SCHEDULED_START_RETAINED_MAGIC 0x53434844U /* "SCHD" */
 #define SCHEDULED_START_RETAINED_VERSION 1U
 #define SCHEDULED_START_SETTINGS_KEY "oe_sched/state"
+#define ACTIVE_RECORDING_RETAINED_MAGIC 0x41524344U /* "ARCD" */
+#define ACTIVE_RECORDING_RETAINED_VERSION 1U
+#define ACTIVE_RECORDING_SETTINGS_KEY "oe_active_rec/state"
+#define MAX_ACTIVE_RECORDING_SENSOR_CONFIGS 16U
 
 struct __packed retained_scheduled_start_state {
 	uint32_t magic;
@@ -76,6 +80,24 @@ struct __packed retained_scheduled_start_state {
 static struct retained_scheduled_start_state retained_scheduled_start __noinit;
 static struct retained_scheduled_start_state settings_scheduled_start;
 static bool settings_scheduled_start_valid = false;
+
+struct __packed retained_active_recording_state {
+	uint32_t magic;
+	uint16_t version;
+	uint8_t active;
+	uint8_t config_count;
+	char recording_name[MAX_SENSOR_REC_NAME_LENGTH];
+	struct sensor_config configs[MAX_ACTIVE_RECORDING_SENSOR_CONFIGS];
+	uint32_t checksum;
+};
+
+static struct retained_active_recording_state retained_active_recording __noinit;
+static struct retained_active_recording_state settings_active_recording;
+static bool settings_active_recording_valid = false;
+static struct sensor_config restored_active_recording_configs[MAX_ACTIVE_RECORDING_SENSOR_CONFIGS];
+static size_t restored_active_recording_config_count = 0U;
+static char restored_active_recording_name[MAX_SENSOR_REC_NAME_LENGTH] = {0};
+static bool active_recording_restore_pending = false;
 
 struct __packed scheduled_sensor_start_cfg {
 	uint8_t sensorId;
@@ -99,6 +121,8 @@ K_WORK_DELAYABLE_DEFINE(scheduled_sensor_start_work, scheduled_sensor_start_work
 static void start_recording_sensor_suite(void);
 static void sensor_service_time_sync_callback(void);
 static void schedule_or_start_sensor_config(void);
+static void refresh_active_recording_persistence(void);
+static void maybe_resume_active_recording(void);
 
 static uint32_t checksum_fnv1a32(const uint8_t *data, size_t len)
 {
@@ -114,6 +138,12 @@ static uint32_t retained_scheduled_start_checksum(const struct retained_schedule
 {
 	return checksum_fnv1a32((const uint8_t *)state,
 				offsetof(struct retained_scheduled_start_state, checksum));
+}
+
+static uint32_t retained_active_recording_checksum(const struct retained_active_recording_state *state)
+{
+	return checksum_fnv1a32((const uint8_t *)state,
+				offsetof(struct retained_active_recording_state, checksum));
 }
 
 static bool scheduled_start_state_valid(const struct retained_scheduled_start_state *state)
@@ -134,6 +164,39 @@ static bool scheduled_start_state_valid(const struct retained_scheduled_start_st
 
 	if (state->recording_name[0] == '\0') {
 		return false;
+	}
+
+	return true;
+}
+
+static bool active_recording_state_valid(const struct retained_active_recording_state *state)
+{
+	if (state == NULL) {
+		return false;
+	}
+
+	if (state->magic != ACTIVE_RECORDING_RETAINED_MAGIC ||
+	    state->version != ACTIVE_RECORDING_RETAINED_VERSION ||
+	    state->active != 1U) {
+		return false;
+	}
+
+	if (state->config_count == 0U || state->config_count > MAX_ACTIVE_RECORDING_SENSOR_CONFIGS) {
+		return false;
+	}
+
+	if (state->checksum != retained_active_recording_checksum(state)) {
+		return false;
+	}
+
+	if (state->recording_name[0] == '\0') {
+		return false;
+	}
+
+	for (uint8_t i = 0; i < state->config_count; ++i) {
+		if ((state->configs[i].storageOptions & DATA_STORAGE) == 0U) {
+			return false;
+		}
 	}
 
 	return true;
@@ -172,9 +235,47 @@ static int scheduled_start_settings_set(const char *name, size_t len, settings_r
 
 SETTINGS_STATIC_HANDLER_DEFINE(scheduled_start_settings, "oe_sched", NULL, scheduled_start_settings_set, NULL, NULL);
 
+static int active_recording_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	if (strcmp(name, "state") != 0) {
+		return -ENOENT;
+	}
+
+	if (len != sizeof(struct retained_active_recording_state)) {
+		return -EINVAL;
+	}
+
+	struct retained_active_recording_state state = {0};
+	int rc = read_cb(cb_arg, &state, sizeof(state));
+	if (rc < 0) {
+		return rc;
+	}
+
+	if (rc != sizeof(state)) {
+		return -EINVAL;
+	}
+
+	if (!active_recording_state_valid(&state)) {
+		LOG_WRN("Ignoring persisted active recording due to invalid payload");
+		settings_active_recording_valid = false;
+		return 0;
+	}
+
+	settings_active_recording = state;
+	settings_active_recording_valid = true;
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(active_recording_settings, "oe_active_rec", NULL, active_recording_settings_set, NULL, NULL);
+
 static void retained_scheduled_start_clear(void)
 {
 	(void)memset(&retained_scheduled_start, 0, sizeof(retained_scheduled_start));
+}
+
+static void retained_active_recording_clear(void)
+{
+	(void)memset(&retained_active_recording, 0, sizeof(retained_active_recording));
 }
 
 static void retained_scheduled_start_store(void)
@@ -236,6 +337,136 @@ static bool retained_scheduled_start_restore(uint64_t *start_time_us, char *name
 	return true;
 }
 
+static bool retained_active_recording_restore(struct retained_active_recording_state *state_out)
+{
+	if (state_out == NULL) {
+		return false;
+	}
+
+	if (!active_recording_state_valid(&retained_active_recording)) {
+		return false;
+	}
+
+	*state_out = retained_active_recording;
+	return true;
+}
+
+static bool build_active_recording_state(struct retained_active_recording_state *state)
+{
+	if (state == NULL || active_sensor_configs == NULL) {
+		return false;
+	}
+
+	(void)memset(state, 0, sizeof(*state));
+	state->magic = ACTIVE_RECORDING_RETAINED_MAGIC;
+	state->version = ACTIVE_RECORDING_RETAINED_VERSION;
+	state->active = 1U;
+	strncpy(state->recording_name, sensor_recording_name, sizeof(state->recording_name) - 1U);
+	state->recording_name[sizeof(state->recording_name) - 1U] = '\0';
+
+	for (size_t i = 0; i < active_sensor_configs_size; ++i) {
+		if ((active_sensor_configs[i].storageOptions & DATA_STORAGE) == 0U) {
+			continue;
+		}
+
+		if (state->config_count >= MAX_ACTIVE_RECORDING_SENSOR_CONFIGS) {
+			LOG_WRN("Too many active recording configs to persist");
+			return false;
+		}
+
+		state->configs[state->config_count++] = active_sensor_configs[i];
+	}
+
+	if (state->config_count == 0U) {
+		return false;
+	}
+
+	if (state->recording_name[0] == '\0') {
+		strncpy(state->recording_name, "recording_", sizeof(state->recording_name) - 1U);
+		state->recording_name[sizeof(state->recording_name) - 1U] = '\0';
+	}
+
+	state->checksum = retained_active_recording_checksum(state);
+	return true;
+}
+
+static void persist_active_recording_to_settings(void)
+{
+	struct retained_active_recording_state state = {0};
+
+	if (!build_active_recording_state(&state)) {
+		int ret = settings_delete(ACTIVE_RECORDING_SETTINGS_KEY);
+		if (ret != 0 && ret != -ENOENT) {
+			LOG_WRN("Failed to clear persisted active recording, ret=%d", ret);
+		}
+		return;
+	}
+
+	int ret = settings_save_one(ACTIVE_RECORDING_SETTINGS_KEY, &state, sizeof(state));
+	if (ret != 0) {
+		LOG_WRN("Failed to persist active recording to settings, ret=%d", ret);
+	}
+}
+
+static void refresh_active_recording_persistence(void)
+{
+	struct retained_active_recording_state state = {0};
+
+	if (!build_active_recording_state(&state)) {
+		retained_active_recording_clear();
+		persist_active_recording_to_settings();
+		return;
+	}
+
+	retained_active_recording = state;
+	persist_active_recording_to_settings();
+}
+
+static void clear_active_recording_restore_buffers(void)
+{
+	restored_active_recording_config_count = 0U;
+	restored_active_recording_name[0] = '\0';
+	active_recording_restore_pending = false;
+}
+
+static void clear_active_recording_runtime_state(void)
+{
+	clear_active_recording_restore_buffers();
+	retained_active_recording_clear();
+}
+
+static void clear_persisted_active_recording_state(void)
+{
+	clear_active_recording_runtime_state();
+	settings_active_recording_valid = false;
+
+	int ret = settings_delete(ACTIVE_RECORDING_SETTINGS_KEY);
+	if (ret != 0 && ret != -ENOENT) {
+		LOG_WRN("Failed to clear persisted active recording, ret=%d", ret);
+	}
+}
+
+static void build_recovered_recording_name(const char *base_name, char *out, size_t out_size)
+{
+	uint64_t now_ms = micros() / 1000ULL;
+	char suffix[32];
+	int suffix_len = snprintk(suffix, sizeof(suffix), "_resume_%llu", (unsigned long long)now_ms);
+
+	if (suffix_len < 0) {
+		suffix[0] = '\0';
+		suffix_len = 0;
+	}
+
+	if (base_name == NULL || base_name[0] == '\0') {
+		base_name = "recording";
+	}
+
+	size_t suffix_size = MIN((size_t)suffix_len, sizeof(suffix) - 1U);
+	size_t max_base_len = (out_size - 1U > suffix_size) ? (out_size - 1U - suffix_size) : 0U;
+
+	snprintk(out, out_size, "%.*s%s", (int)max_base_len, base_name, suffix);
+}
+
 static void restore_scheduled_sensor_start_if_needed(void)
 {
 	uint64_t restored_start_us = 0;
@@ -268,6 +499,62 @@ static void restore_scheduled_sensor_start_if_needed(void)
 		schedule_or_start_sensor_config();
 	} else {
 		LOG_INF("Retained schedule is pending; waiting for time sync before activating");
+	}
+}
+
+static void restore_active_recording_if_needed(void)
+{
+	struct retained_active_recording_state restored = {0};
+	bool restored_valid = false;
+
+	if (oe_boot_state.manual_reset) {
+		LOG_INF("Manual reset detected: clearing persisted active recording state");
+		clear_persisted_active_recording_state();
+		return;
+	}
+
+	if (oe_boot_state.intentional_power_off_reset) {
+		LOG_INF("Intentional power-off detected: clearing persisted active recording state");
+		clear_persisted_active_recording_state();
+		return;
+	}
+
+	if (settings_active_recording_valid) {
+		restored = settings_active_recording;
+		restored_valid = true;
+		LOG_INF("Restored active recording state from settings with name '%s'",
+			restored.recording_name);
+	} else {
+		restored_valid = retained_active_recording_restore(&restored);
+		if (restored_valid) {
+			LOG_INF("Restored active recording state from retained RAM with name '%s'",
+				restored.recording_name);
+		}
+	}
+
+	if (!restored_valid) {
+		LOG_INF("Boot startup: no persisted active recording found");
+		return;
+	}
+
+	if (!oe_boot_state.runtime_recovery_reset) {
+		LOG_INF("Boot startup: dropping persisted active recording because boot is not a runtime recovery");
+		clear_persisted_active_recording_state();
+		return;
+	}
+
+	restored_active_recording_config_count = restored.config_count;
+	memcpy(restored_active_recording_configs, restored.configs,
+	       restored.config_count * sizeof(restored.configs[0]));
+	strncpy(restored_active_recording_name, restored.recording_name,
+		sizeof(restored_active_recording_name) - 1U);
+	restored_active_recording_name[sizeof(restored_active_recording_name) - 1U] = '\0';
+	active_recording_restore_pending = true;
+
+	if (time_sync_is_synced()) {
+		maybe_resume_active_recording();
+	} else {
+		LOG_INF("Active recording recovery is pending; waiting for time sync before restarting");
 	}
 }
 
@@ -408,6 +695,27 @@ static void config_recording_sensor(uint8_t sensor_id, uint8_t sample_rate_index
 	config_sensor(&sensor_cfg);
 }
 
+static void maybe_resume_active_recording(void)
+{
+	if (!active_recording_restore_pending) {
+		return;
+	}
+
+	char resumed_name[MAX_SENSOR_REC_NAME_LENGTH] = {0};
+	build_recovered_recording_name(restored_active_recording_name, resumed_name, sizeof(resumed_name));
+	set_sensor_recording_name(resumed_name);
+
+	LOG_INF("Resuming active recording after reset with name '%s'", resumed_name);
+
+	for (size_t i = 0; i < restored_active_recording_config_count; ++i) {
+		struct sensor_config cfg = restored_active_recording_configs[i];
+		cfg.storageOptions &= DATA_STORAGE;
+		config_sensor(&cfg);
+	}
+
+	active_recording_restore_pending = false;
+}
+
 static void start_recording_sensor_suite(void)
 {
 	config_recording_sensor(ID_EXG, EXG_RECORD_SAMPLE_RATE_INDEX);
@@ -515,6 +823,7 @@ static int schedule_sensor_start_internal(uint8_t sensor_id, uint8_t sample_rate
 
 	/* Ensure no sensors keep running while waiting for scheduled start. */
 	stop_sensor_manager();
+	clear_persisted_active_recording_state();
 	cancel_scheduled_sensor_start();
 
 	scheduled_start_unix_us = start_time_us;
@@ -538,6 +847,8 @@ static int schedule_sensor_start_internal(uint8_t sensor_id, uint8_t sample_rate
 
 static void sensor_service_time_sync_callback(void)
 {
+	maybe_resume_active_recording();
+
 	if (!scheduled_start_active) {
 		return;
 	}
@@ -886,6 +1197,8 @@ int set_sensor_config_status(struct sensor_config config) {
 		active_sensor_configs[active_sensor_configs_size - 1] = config;
 	}
 
+	refresh_active_recording_persistence();
+
 	if (sensor_config_status_ntfy_enabled) {
 		LOG_DBG("Sensor config status notification, notifying %zu active sensor configs", active_sensor_configs_size);
 		struct bt_gatt_notify_params params = {
@@ -945,6 +1258,7 @@ int init_sensor_service() {
 	}
 
 	restore_scheduled_sensor_start_if_needed();
+	restore_active_recording_if_needed();
 
     return 0;
 }
@@ -990,4 +1304,14 @@ int sensor_service_schedule_exg_start(uint8_t sample_rate_index, uint64_t start_
 {
 	ARG_UNUSED(sample_rate_index);
 	return schedule_sensor_start_internal(ID_EXG, EXG_RECORD_SAMPLE_RATE_INDEX, DATA_STORAGE, start_time_us);
+}
+
+void sensor_service_prepare_manual_power_off(void)
+{
+	/*
+	 * Manual power-off runs in the button-triggered shutdown path. Only clear
+	 * volatile recovery state here; the persisted settings entry is deleted on
+	 * the next boot once the intentional power-off marker has been observed.
+	 */
+	clear_active_recording_runtime_state();
 }

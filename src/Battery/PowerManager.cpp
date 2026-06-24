@@ -30,6 +30,7 @@
 
 #include "bt_mgmt.h"
 #include "bt_mgmt_ctlr_cfg_internal.h"
+#include "../bluetooth/gatt_services/sensor_service.h"
 
 #include <zephyr/logging/log_ctrl.h>
 
@@ -222,7 +223,10 @@ void PowerManager::battery_controller_work_handler(struct k_work * work) {
         power_manager.power_on = !power_manager.power_on;
         //LOG_INF("Power on: %i", power_manager.power_on);
 
-        if (!power_manager.power_on) power_manager.power_down();
+        if (!power_manager.power_on) {
+            sensor_service_prepare_manual_power_off();
+            power_manager.power_down();
+        }
     }
 
 }
@@ -409,7 +413,10 @@ int PowerManager::begin() {
     log_reset_reason(reset_reas);
     bool intentional_power_off_reset = consume_intentional_power_off() &&
                                        (reset_reas & RESET_RESETREAS_SREQ_Msk);
+    oe_boot_state.timer_reset = false;
     oe_boot_state.manual_reset = false;
+    oe_boot_state.runtime_recovery_reset = false;
+    oe_boot_state.intentional_power_off_reset = intentional_power_off_reset;
 
     // reset the reset reason
     NRF_RESET->RESETREAS = 0xFFFFFFFF;
@@ -422,6 +429,7 @@ int PowerManager::begin() {
          */
         oe_boot_state.timer_reset = ((bat_state & (1 << 4)) != 0);
         oe_boot_state.manual_reset = oe_boot_state.timer_reset;
+        oe_boot_state.runtime_recovery_reset = !oe_boot_state.manual_reset;
 
         if (oe_boot_state.manual_reset) {
             LOG_INF("Pin reset with timer/button marker: treating as manual reset");
@@ -442,6 +450,7 @@ int PowerManager::begin() {
         power_on = false;
     } else if (keep_power_on_after_reset(reset_reas)) {
         LOG_WRN("Runtime reset detected, keeping power_on state active");
+        oe_boot_state.runtime_recovery_reset = true;
         power_on = true;
     }
 
