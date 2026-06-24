@@ -459,8 +459,10 @@ int PowerManager::begin() {
         LOG_WRN("Unable to read fuel gauge operation state; skipping reconfiguration");
     } else if (state.SEC != BQ27220::SEALED) {
         //battery_controller.setup();
-        fuel_gauge.setup(_battery_settings);
-        gauge_reconfigured = true;
+        gauge_reconfigured = fuel_gauge.setup(_battery_settings);
+        if (!gauge_reconfigured) {
+            LOG_ERR("Fuel gauge reconfiguration failed during boot");
+        }
     }
 
     /* Apply a different battery profile before charger work can access the gauge. */
@@ -471,7 +473,9 @@ int PowerManager::begin() {
         } else if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
             LOG_INF("Fuel gauge design capacity %.0f mAh differs from firmware value %.0f mAh; reconfiguring",
                     (double)design_capacity, (double)_battery_settings.capacity);
-            fuel_gauge.setup(_battery_settings);
+            if (!fuel_gauge.setup(_battery_settings)) {
+                LOG_ERR("Fuel gauge design-capacity reconfiguration failed");
+            }
         }
     }
 
@@ -584,7 +588,9 @@ int PowerManager::begin() {
 		}
         LOG_INF("Image confirmed");
         #ifdef CONFIG_SETUP_FUEL_GAUGE
-        fuel_gauge.setup(_battery_settings);
+        if (!fuel_gauge.setup(_battery_settings)) {
+            LOG_ERR("Fuel gauge setup failed after battery-controller fault");
+        }
         #endif
 	}
 #endif
@@ -855,7 +861,10 @@ int cmd_setup_fuel_gauge(const struct shell *shell, size_t argc, const char **ar
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
-    fuel_gauge.setup(power_manager._battery_settings);
+    if (!fuel_gauge.setup(power_manager._battery_settings)) {
+        shell_error(shell, "Fuel gauge setup verification failed");
+        return -EIO;
+    }
 
     power_manager.reboot();
 

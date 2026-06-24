@@ -413,7 +413,7 @@ int BQ27220::write_RAM(uint16_t ram_address, uint16_t val, bool check) {
         return write_RAM(ram_address, data, sizeof(val), check);
 }
 
-void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
+bool BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         int ret;
 
         // unseal
@@ -433,28 +433,38 @@ void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
 
         // design and full charge capacity
         ret = write_RAM(0x929F, _battery_settings.capacity);
+        if (ret != 0) return false;
         ret = write_RAM(0x929D, _battery_settings.capacity); //130
+        if (ret != 0) return false;
         // near full
         ret = write_RAM(0x926B, 5);
+        if (ret != 0) return false;
 
         ret = write_RAM(0x91F5, _battery_settings.temp_min * 10);
+        if (ret != 0) return false;
         ret = write_RAM(0x91F7, _battery_settings.temp_max * 10);
+        if (ret != 0) return false;
 
         // charge current
         ret = write_RAM(0x91FB, _battery_settings.i_charge);
+        if (ret != 0) return false;
 
         // charge voltage
         ret = write_RAM(0x91FD, _battery_settings.u_term * 1000);
+        if (ret != 0) return false;
 
         // taper current
         ret = write_RAM(0x9201, _battery_settings.i_term);
+        if (ret != 0) return false;
 
         // experimental: min taper capacity
         ret = write_RAM(0x9203, 4); // standard: 25
+        if (ret != 0) return false;
 
         // deadband
         uint8_t val = 1;
         ret = write_RAM(0x91DE, &val, sizeof(uint8_t));
+        if (ret != 0) return false;
         
         // deadband CC (verursacht Probleme, rm zählt zu schnell?)
         /*val = 5;
@@ -463,13 +473,17 @@ void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         
         // sleep current
         ret = write_RAM(0x9217, 1);
+        if (ret != 0) return false;
 
         // dischage current trd
         ret = write_RAM(0x9228, 2);
+        if (ret != 0) return false;
         // charge current trd
         ret = write_RAM(0x922A, 2);
+        if (ret != 0) return false;
         // quit current
         ret = write_RAM(0x922C, 1);
+        if (ret != 0) return false;
 
         //dod  0%: 4287
         //dod 10%: 4125
@@ -492,28 +506,36 @@ void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
 
         // sysDown set Voltage
         ret = write_RAM(0x9240, _battery_settings.u_vlo * 1000 + CONFIG_BATTERY_SYSDOWN_SET_OFFSET);
+        if (ret != 0) return false;
 
         // sysDown clear Voltage
         ret = write_RAM(0x9243, _battery_settings.u_vlo * 1000 + CONFIG_BATTERY_SYSDOWN_SET_OFFSET + CONFIG_BATTERY_SYSDOWN_HYSTERESIS);
+        if (ret != 0) return false;
 
         // FD set
         ret = write_RAM(0x9282, _battery_settings.u_vlo * 1000 + CONFIG_BATTERY_FD_SET_OFFSET);
+        if (ret != 0) return false;
 
         // FD clear
         ret = write_RAM(0x9284, _battery_settings.u_vlo * 1000 + CONFIG_BATTERY_FD_SET_OFFSET + CONFIG_BATTERY_FD_HYSTERESIS); 
+        if (ret != 0) return false;
 
         // FC Voltage
         ret = write_RAM(0x9288, _battery_settings.u_term * 1000 - CONFIG_BATTERY_FC_VOLTAGE_OFFSET);
+        if (ret != 0) return false;
 
         // Electonic Load in 3µA steps
         ret = write_RAM(0x9269, 6); // 18 µA
+        if (ret != 0) return false;
 
         // EMF
         //write_RAM(0x92A7, 36001);
         //C0
         ret = write_RAM(0x92A9, 480); //bat1:250
+        if (ret != 0) return false;
         //R0
         ret = write_RAM(0x92AB, 19941); //bat1: 19941 //22542 //new bat:  17340
+        if (ret != 0) return false;
         //R1
         //write_RAM(0x92AF, 3160);
 
@@ -526,20 +548,39 @@ void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         // SOC Flag, enable FC voltage detection
         uint8_t flags_b = 0x8C;
         ret = write_RAM(0x9281, &flags_b, sizeof(flags_b));
+        if (ret != 0) return false;
 
         // Overload current
         ret = write_RAM(0x9264, _battery_settings.i_max);
+        if (ret != 0) return false;
 
         // CEDV Smoothing Config
         uint8_t cedv_conf = 0x0D; //Default: 0x08, Enable SMEXT, SMEN 0x0D
         ret = write_RAM(0x9271, &cedv_conf, sizeof(cedv_conf));
+        if (ret != 0) return false;
 
         ret = write_RAM(0x9272, 3700);
+        if (ret != 0) return false;
 
         exit_config_update(init);
 
         // put fuel gauge to sealed state
         write_command(SEAL);
+
+        float design_capacity = 0.0f;
+        if (!read_design_cap(design_capacity)) {
+                LOG_ERR("Fuel gauge setup finished, but design capacity readback failed");
+                return false;
+        }
+
+        if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
+                LOG_ERR("Fuel gauge setup verification failed: expected %.0f mAh, got %.0f mAh",
+                        (double)_battery_settings.capacity, (double)design_capacity);
+                return false;
+        }
+
+        LOG_INF("Fuel gauge design capacity verified at %.0f mAh", (double)design_capacity);
+        return true;
 }
 
 int BQ27220::set_int_callback(gpio_callback_handler_t handler) {

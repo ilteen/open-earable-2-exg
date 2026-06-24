@@ -144,7 +144,7 @@ public:
     void exit_config_update(bool init = true);
 
     void full_access();
-    void setup(const battery_settings &_battery_settings, bool init = true);
+    bool setup(const battery_settings &_battery_settings, bool init = true);
 
     int set_wakeup_int();
 
