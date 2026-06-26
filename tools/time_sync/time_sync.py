@@ -896,11 +896,74 @@ SENSOR_FORMATS = {
 
 ACTIVE_SENSORS = ["imu", "ppg_right", "ppg_left", "optical_temp_right", "optical_temp_left", "exg"]
 
+MAX_SENSOR_PAYLOAD_SIZE = 192
+PARSE_RESYNC_SCAN_BYTES = 512
+
+
+def _record_payload_size_is_valid(sensor_id: int, payload_size: int) -> bool:
+    if payload_size <= 0 or payload_size > MAX_SENSOR_PAYLOAD_SIZE:
+        return False
+
+    if sensor_id not in SENSOR_FORMATS:
+        return False
+
+    expected_size = struct.calcsize(SENSOR_FORMATS[sensor_id])
+    if payload_size == expected_size:
+        return True
+
+    if sensor_id in (SENSOR_SID["ppg_right"], SENSOR_SID["ppg_left"]):
+        return payload_size > 2 and (payload_size - 2) % expected_size == 0
+
+    return False
+
+
+def _record_header_is_valid(sensor_id: int, payload_size: int) -> bool:
+    return _record_payload_size_is_valid(sensor_id, payload_size)
+
+
+def _find_resync_offset(f, record_start: int, file_size: int) -> Optional[int]:
+    if record_start + SENSOR_PACKET_HEADER_SIZE >= file_size:
+        return None
+
+    max_window = min(
+        PARSE_RESYNC_SCAN_BYTES + SENSOR_PACKET_HEADER_SIZE + MAX_SENSOR_PAYLOAD_SIZE + SENSOR_PACKET_HEADER_SIZE,
+        file_size - record_start,
+    )
+    f.seek(record_start)
+    window = bytearray(f.read(max_window))
+
+    for shift in range(1, min(PARSE_RESYNC_SCAN_BYTES, len(window) - SENSOR_PACKET_HEADER_SIZE) + 1):
+        if shift + SENSOR_PACKET_HEADER_SIZE > len(window):
+            break
+
+        sensor_id, payload_size, _ = struct.unpack_from(
+            SENSOR_PACKET_HEADER_FORMAT, window, shift
+        )
+        if not _record_header_is_valid(sensor_id, payload_size):
+            continue
+
+        next_header_offset = shift + SENSOR_PACKET_HEADER_SIZE + payload_size
+        if next_header_offset == len(window):
+            return shift
+
+        if next_header_offset + SENSOR_PACKET_HEADER_SIZE > len(window):
+            continue
+
+        next_sensor_id, next_payload_size, _ = struct.unpack_from(
+            SENSOR_PACKET_HEADER_FORMAT, window, next_header_offset
+        )
+        if _record_header_is_valid(next_sensor_id, next_payload_size):
+            return shift
+
+    return None
+
 
 def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
     """Parse .oe file and return DataFrame and metadata."""
     FILE_HEADER_FORMAT = '<HQ'
     FILE_HEADER_SIZE = struct.calcsize(FILE_HEADER_FORMAT)
+    FILE_HEADER_V3_FORMAT = '<HQIIQB'
+    FILE_HEADER_V3_SIZE = struct.calcsize(FILE_HEADER_V3_FORMAT)
     
     data = defaultdict(list)
     metadata = {}
@@ -925,8 +988,36 @@ def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
         metadata['filename'] = os.path.basename(filename)
         metadata['filesize_bytes'] = file_size
         metadata['truncated'] = False
+        metadata['header_size'] = FILE_HEADER_SIZE
+        metadata['resync_count'] = 0
+        metadata['resync_positions'] = []
+
+        if version == 0x0003:
+            f.seek(0)
+            file_header_v3 = f.read(FILE_HEADER_V3_SIZE)
+            if len(file_header_v3) < FILE_HEADER_V3_SIZE:
+                raise ValueError(
+                    f"Version 0x0003 header is truncated (expected {FILE_HEADER_V3_SIZE} bytes, got {len(file_header_v3)})."
+                )
+
+            version, timestamp, header_size, parse_info_size, device_id, side = struct.unpack(
+                FILE_HEADER_V3_FORMAT, file_header_v3
+            )
+
+            if header_size < FILE_HEADER_V3_SIZE or header_size > file_size:
+                raise ValueError(
+                    f"Invalid v0x0003 header size {header_size} for file size {file_size}."
+                )
+
+            metadata['timestamp'] = timestamp
+            metadata['header_size'] = header_size
+            metadata['parse_info_size'] = parse_info_size
+            metadata['device_id'] = device_id
+            metadata['side'] = side
+            f.seek(header_size)
 
         while True:
+            record_start = f.tell()
             header = f.read(10)
             if len(header) == 0:
                 break
@@ -934,11 +1025,18 @@ def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
                 metadata['truncated'] = True
                 break
             sid, size, time_us = struct.unpack('<BBQ', header)
-            if size > 192 or sid > 9:
-                if _sid is not None and _sid in data.keys():
-                    data[_sid].pop()
-                metadata['truncated'] = True
-                break
+            if not _record_header_is_valid(sid, size):
+                resync_offset = _find_resync_offset(f, record_start, file_size)
+                if resync_offset is None:
+                    if _sid is not None and _sid in data.keys():
+                        data[_sid].pop()
+                    metadata['truncated'] = True
+                    break
+
+                metadata['resync_count'] += 1
+                metadata['resync_positions'].append(record_start)
+                f.seek(record_start + resync_offset)
+                continue
 
             _sid = sid
             raw_data = f.read(size)
@@ -2128,6 +2226,13 @@ class FileConverterTab(QWidget):
                 info_label = QLabel()
                 info_text = f"<b>📄 {metadata['filename']}</b><br>"
                 info_text += f"Version: {metadata['version']} | Rows: {len(df)}<br>"
+                if metadata.get('resync_count', 0) > 0:
+                    info_text += (
+                        f"Recovered corrupt chunks: {metadata['resync_count']}"
+                        f"{' | ' if metadata.get('truncated') else '<br>'}"
+                    )
+                if metadata.get('truncated'):
+                    info_text += "File ended with truncated data<br>"
                 sensors_with_data = [s for s, c in metadata['sensor_counts'].items() if c > 0]
                 info_text += f"Sensors: {', '.join(sensors_with_data)}"
                 info_label.setText(info_text)
