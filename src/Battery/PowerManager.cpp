@@ -38,6 +38,9 @@
 LOG_MODULE_REGISTER(power_manager, LOG_LEVEL_DBG);
 
 static constexpr float RECORDING_CHARGE_HEADROOM_MA = 150.0f;
+static constexpr float CHARGER_RECOVERY_MIN_CURRENT_MA = 5.0f;
+static constexpr float CHARGER_RECOVERY_VOLTAGE_MARGIN_V = 0.02f;
+static constexpr int CHARGER_RECOVERY_SETTLE_MS = 20;
 
 #define INTENTIONAL_POWER_OFF_MAGIC 0x504F4646U /* "POFF" */
 
@@ -335,6 +338,24 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
                 LOG_WRN("charging state reported fault without fault bits; treating as charging");
                 msg.charging_state = CHARGING;
                 break;
+            }
+
+            if (power_connected &&
+                voltage < power_manager._battery_settings.u_term - CHARGER_RECOVERY_VOLTAGE_MARGIN_V &&
+                (!battery_status_valid || !bat.SYSDWN)) {
+                LOG_WRN("charging state fault; attempting charger recovery");
+                power_manager.check_battery();
+                k_msleep(CHARGER_RECOVERY_SETTLE_MS);
+
+                const uint16_t recovered_state = battery_controller.read_charging_state() >> 6;
+                const float recovered_current = fuel_gauge.current();
+
+                if (recovered_state == 1 || recovered_current > CHARGER_RECOVERY_MIN_CURRENT_MA) {
+                    LOG_WRN("charger recovered from fault state");
+                    msg.charging_state = recovered_current > 0.5f * power_manager._battery_settings.i_term ?
+                        CHARGING : POWER_CONNECTED;
+                    break;
+                }
             }
 
             LOG_WRN("charging state: fault");
