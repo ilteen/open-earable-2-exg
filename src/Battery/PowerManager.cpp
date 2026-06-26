@@ -246,6 +246,7 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
     //if (bat.FD) k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
     if (power_manager.power_on && battery_status_valid && bat.SYSDWN &&
         fuel_gauge_shutdown_confirmed(power_manager._battery_settings)) {
+        sensor_service_prepare_battery_shutdown();
         k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
     }
 

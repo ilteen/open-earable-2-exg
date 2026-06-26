@@ -513,12 +513,6 @@ static void restore_active_recording_if_needed(void)
 		return;
 	}
 
-	if (oe_boot_state.intentional_power_off_reset) {
-		LOG_INF("Intentional power-off detected: clearing persisted active recording state");
-		clear_persisted_active_recording_state();
-		return;
-	}
-
 	if (settings_active_recording_valid) {
 		restored = settings_active_recording;
 		restored_valid = true;
@@ -1308,10 +1302,11 @@ int sensor_service_schedule_exg_start(uint8_t sample_rate_index, uint64_t start_
 
 void sensor_service_prepare_manual_power_off(void)
 {
-	/*
-	 * Manual power-off runs in the button-triggered shutdown path. Only clear
-	 * volatile recovery state here; the persisted settings entry is deleted on
-	 * the next boot once the intentional power-off marker has been observed.
-	 */
-	clear_active_recording_runtime_state();
+	clear_persisted_active_recording_state();
+}
+
+void sensor_service_prepare_battery_shutdown(void)
+{
+	cancel_scheduled_sensor_start();
+	clear_persisted_active_recording_state();
 }

@@ -44,6 +44,7 @@ int sensor_service_schedule_start(uint8_t sensor_id, uint8_t sample_rate_index, 
 				  uint64_t start_time_us);
 int sensor_service_schedule_exg_start(uint8_t sample_rate_index, uint64_t start_time_us);
 void sensor_service_prepare_manual_power_off(void);
+void sensor_service_prepare_battery_shutdown(void);
 
 void temp_disable_notifies(bool disable);
 
