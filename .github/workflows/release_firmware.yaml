@@ -1,4 +1,4 @@
-name: Release OpenEarable v2 Firmware
+name: Release OpenEarable ExG Firmware
 
 on:
   workflow_dispatch:

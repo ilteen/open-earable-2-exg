@@ -1,5 +1,5 @@
 /*
- * USB Time Sync Module for OpenEarable v2
+ * USB Time Sync Module for OpenEarable ExG
  * 
  * Implements time synchronization over USB CDC serial connection.
  */

@@ -1,5 +1,5 @@
 /*
- * USB Time Sync Module for OpenEarable v2
+ * USB Time Sync Module for OpenEarable ExG
  * 
  * Enables time synchronization over USB CDC serial connection.
  * This provides lower latency and more accurate sync than BLE.

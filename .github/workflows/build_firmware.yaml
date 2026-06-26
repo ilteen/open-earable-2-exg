@@ -1,4 +1,4 @@
-name: Build OpenEarable v2 Firmware
+name: Build OpenEarable ExG Firmware
 
 on:
   workflow_call:

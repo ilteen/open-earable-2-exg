@@ -5,7 +5,7 @@ on:
 
   workflow_run:
     workflows:
-      - "Build OpenEarable v2 Firmware"
+      - "Build OpenEarable ExG Firmware"
     types:
       - completed
 
@@ -16,7 +16,7 @@ permissions:
 
 env:
   TAG: pr-builds
-  BUILD_WORKFLOW_NAME: "Build OpenEarable v2 Firmware"
+  BUILD_WORKFLOW_NAME: "Build OpenEarable ExG Firmware"
 
 jobs:
   prerelease:

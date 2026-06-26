@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GUI tool for OpenEarable v2:
+GUI tool for OpenEarable ExG:
 - Sync time via BLE or USB
 - Import .oe files and export to CSV
 
