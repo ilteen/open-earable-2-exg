@@ -7,6 +7,11 @@ LOG_MODULE_REGISTER(bq25120a, LOG_LEVEL_DBG);
 
 BQ25120a battery_controller(&I2C1);
 
+static constexpr uint8_t BQ25120A_VIN_DPM_TIMERS_RESET = 0x4A;
+static constexpr uint8_t BQ25120A_2X_TIMER_EN = BIT(3);
+static constexpr uint8_t BQ25120A_TMR_MASK = BIT(2) | BIT(1);
+static constexpr uint8_t BQ25120A_TMR_9H = BIT(2);
+
 BQ25120a::BQ25120a(TWIM * i2c) : _i2c(i2c) { //, load_switch(LoadSwitch(GPIO_DT_SPEC_GET(DT_NODELABEL(bq25120a), lsctrl_gpios))) {
 
 }
@@ -137,6 +142,7 @@ void BQ25120a::setup(const battery_settings &_battery_settings) {
         ilim_uvlo params;
         params.lim_mA = _battery_settings.i_max;
         params.uvlo_v = _battery_settings.u_vlo;
+        uint8_t vin_dpm_timers = BQ25120A_VIN_DPM_TIMERS_RESET;
 
         exit_high_impedance();
 
@@ -147,6 +153,12 @@ void BQ25120a::setup(const battery_settings &_battery_settings) {
         write_termination_control(_battery_settings.i_term);
         write_LDO_voltage_control(3.3);
         write_uvlo_ilim(params);
+        if (!readReg(registers::VIN_DPM_TIMERS, &vin_dpm_timers, sizeof(vin_dpm_timers))) {
+                LOG_WRN("Failed to read VIN_DPM_TIMERS; using reset defaults for timer config");
+        }
+        vin_dpm_timers &= ~(BQ25120A_2X_TIMER_EN | BQ25120A_TMR_MASK);
+        vin_dpm_timers |= BQ25120A_2X_TIMER_EN | BQ25120A_TMR_9H;
+        writeReg(registers::VIN_DPM_TIMERS, &vin_dpm_timers, sizeof(vin_dpm_timers));
 
         enter_high_impedance();
 }

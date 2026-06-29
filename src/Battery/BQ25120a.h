@@ -42,7 +42,8 @@ public:
         BAT_VOL_CTRL = 0x05,
         LS_LDO_CTRL = 0x07,
         BTN_CTRL = 0x08,
-        ILIM_UVLO = 0x09
+        ILIM_UVLO = 0x09,
+        VIN_DPM_TIMERS = 0x0B
     };
 
     BQ25120a(TWIM * i2c);

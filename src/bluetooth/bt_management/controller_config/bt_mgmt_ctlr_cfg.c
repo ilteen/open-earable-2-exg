@@ -56,6 +56,8 @@ static void work_ctlr_poll_handler(struct k_work *work)
 		return;
 	}
 
+	atomic_clear(&ctlr_wdt_timeout_count);
+
 	ret = task_wdt_feed(wdt_ch_id);
 	if (ret) {
 		LOG_ERR("Failed to feed watchdog: %d", ret);
@@ -80,10 +82,15 @@ static void wdt_timeout_cb(int channel_id, void *user_data)
 	int timeout_count = (int)atomic_inc(&ctlr_wdt_timeout_count) + 1;
 	LOG_WRN("No response from IPC/controller (timeout #%d), attempting recovery", timeout_count);
 
-	/* Keep the system alive and trigger an immediate re-poll instead of hard-faulting. */
-	int ret = task_wdt_feed(wdt_ch_id);
+	/*
+	 * task_wdt callbacks run from the watchdog timer ISR. Feeding the task
+	 * watchdog here crashes because task_wdt_feed() takes the scheduler lock.
+	 * Kick the controller poll work instead and let the worker feed from thread
+	 * context.
+	 */
+	int ret = k_work_submit_to_queue(&ctrl_poll_work_q, &work_ctlr_poll);
 	if (ret) {
-		LOG_ERR("Failed to feed watchdog during recovery: %d", ret);
+		LOG_ERR("Failed to submit recovery work: %d", ret);
 	}
 }
 
