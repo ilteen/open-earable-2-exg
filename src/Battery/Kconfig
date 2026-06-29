@@ -2,7 +2,7 @@ menu "Battery Configuration"
 
 config BATTERY_SYSDOWN_SET_OFFSET
 	int "System Down Set Voltage Offset (mV)"
-	default 250
+	default 200
 	help
 	  Offset added to VLO voltage for System Down Set threshold
 

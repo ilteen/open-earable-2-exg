@@ -93,7 +93,8 @@ static bool fuel_gauge_shutdown_confirmed(const battery_settings &settings)
         return false;
     }
 
-    const float threshold = settings.u_vlo + 0.05f;
+    const float threshold =
+        settings.u_vlo + ((float)CONFIG_BATTERY_SYSDOWN_SET_OFFSET / 1000.0f);
     if (status.SYSDWN && voltage < threshold) {
         LOG_WRN("Battery shutdown confirmed at %.3f V (threshold %.3f V)",
                 (double)voltage, (double)threshold);
@@ -780,6 +781,7 @@ void PowerManager::reboot() {
 
 int PowerManager::power_down(bool fault) {
     int ret;
+    bat_status battery_status = {};
 
     // disconnect devices
     uint8_t data = BT_HCI_ERR_REMOTE_USER_TERM_CONN;
@@ -796,13 +798,18 @@ int PowerManager::power_down(bool fault) {
     stop_sensor_manager();
 
     bool charging = battery_controller.power_connected();
+    bool low_battery_shutdown = fuel_gauge.read_battery_status(battery_status) && battery_status.SYSDWN;
 
     if (!charging) {
         ret = battery_controller.set_wakeup_int();
         if (ret != 0) return ret;
 
-        ret = fuel_gauge.set_wakeup_int();
-        if (ret != 0) return ret;
+        if (!low_battery_shutdown) {
+            ret = fuel_gauge.set_wakeup_int();
+            if (ret != 0) return ret;
+        } else {
+            LOG_INF("Skipping fuel-gauge wakeup because SYSDWN is asserted");
+        }
         
         // check battery good
         //if (!fault) ret = power_switch.set_wakeup_int();
