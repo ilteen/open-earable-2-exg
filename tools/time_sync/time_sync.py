@@ -17,12 +17,16 @@ Features:
 DEBUG = False
 
 import asyncio
+import math
+import mmap
 import os
 import re
 import struct
 import sys
 import threading
 import time
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import deque
 from collections import defaultdict
 from typing import Optional
@@ -37,6 +41,7 @@ from io import BytesIO
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 import digitalfilter
+import oe_parser
 
 # Try PyQt6 first, fall back to PySide6 (better Windows compatibility)
 try:
@@ -898,6 +903,10 @@ ACTIVE_SENSORS = ["imu", "ppg_right", "ppg_left", "optical_temp_right", "optical
 
 MAX_SENSOR_PAYLOAD_SIZE = 192
 PARSE_RESYNC_SCAN_BYTES = 512
+PARSE_TARGET_CHUNK_SIZE = 8 * 1024 * 1024
+PARSE_MIN_PARALLEL_FILE_SIZE = 64 * 1024 * 1024
+MAX_PARALLEL_PARSE_WORKERS = 8
+MAX_PREVIEW_POINTS = 5000
 
 
 def _record_payload_size_is_valid(sensor_id: int, payload_size: int) -> bool:
@@ -921,16 +930,15 @@ def _record_header_is_valid(sensor_id: int, payload_size: int) -> bool:
     return _record_payload_size_is_valid(sensor_id, payload_size)
 
 
-def _find_resync_offset(f, record_start: int, file_size: int) -> Optional[int]:
-    if record_start + SENSOR_PACKET_HEADER_SIZE >= file_size:
+def _find_resync_offset_in_buffer(buffer, start_offset: int, stop_offset: int) -> Optional[int]:
+    if start_offset + SENSOR_PACKET_HEADER_SIZE >= stop_offset:
         return None
 
-    max_window = min(
-        PARSE_RESYNC_SCAN_BYTES + SENSOR_PACKET_HEADER_SIZE + MAX_SENSOR_PAYLOAD_SIZE + SENSOR_PACKET_HEADER_SIZE,
-        file_size - record_start,
+    max_window_end = min(
+        stop_offset,
+        start_offset + PARSE_RESYNC_SCAN_BYTES + SENSOR_PACKET_HEADER_SIZE + MAX_SENSOR_PAYLOAD_SIZE + SENSOR_PACKET_HEADER_SIZE,
     )
-    f.seek(record_start)
-    window = bytearray(f.read(max_window))
+    window = buffer[start_offset:max_window_end]
 
     for shift in range(1, min(PARSE_RESYNC_SCAN_BYTES, len(window) - SENSOR_PACKET_HEADER_SIZE) + 1):
         if shift + SENSOR_PACKET_HEADER_SIZE > len(window):
@@ -958,16 +966,11 @@ def _find_resync_offset(f, record_start: int, file_size: int) -> Optional[int]:
     return None
 
 
-def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
-    """Parse .oe file and return DataFrame and metadata."""
-    FILE_HEADER_FORMAT = '<HQ'
-    FILE_HEADER_SIZE = struct.calcsize(FILE_HEADER_FORMAT)
-    FILE_HEADER_V3_FORMAT = '<HQIIQB'
-    FILE_HEADER_V3_SIZE = struct.calcsize(FILE_HEADER_V3_FORMAT)
-    
-    data = defaultdict(list)
-    metadata = {}
-    _sid = None
+def _parse_file_header(filename: str) -> tuple[dict, int, int]:
+    file_header_format = '<HQ'
+    file_header_size = struct.calcsize(file_header_format)
+    file_header_v3_format = '<HQIIQB'
+    file_header_v3_size = struct.calcsize(file_header_v3_format)
 
     file_size = os.path.getsize(filename)
     if file_size == 0:
@@ -976,35 +979,38 @@ def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
         )
 
     with open(filename, 'rb') as f:
-        file_header = f.read(FILE_HEADER_SIZE)
-        if len(file_header) < FILE_HEADER_SIZE:
+        file_header = f.read(file_header_size)
+        if len(file_header) < file_header_size:
             raise ValueError(
-                f"File header is truncated (expected {FILE_HEADER_SIZE} bytes, got {len(file_header)})."
+                f"File header is truncated (expected {file_header_size} bytes, got {len(file_header)})."
             )
 
-        version, timestamp = struct.unpack(FILE_HEADER_FORMAT, file_header)
-        metadata['version'] = version
-        metadata['timestamp'] = timestamp
-        metadata['filename'] = os.path.basename(filename)
-        metadata['filesize_bytes'] = file_size
-        metadata['truncated'] = False
-        metadata['header_size'] = FILE_HEADER_SIZE
-        metadata['resync_count'] = 0
-        metadata['resync_positions'] = []
+        version, timestamp = struct.unpack(file_header_format, file_header)
+        metadata = {
+            'version': version,
+            'timestamp': timestamp,
+            'filename': os.path.basename(filename),
+            'filesize_bytes': file_size,
+            'truncated': False,
+            'header_size': file_header_size,
+            'resync_count': 0,
+            'resync_positions': [],
+        }
+        data_offset = file_header_size
 
         if version == 0x0003:
             f.seek(0)
-            file_header_v3 = f.read(FILE_HEADER_V3_SIZE)
-            if len(file_header_v3) < FILE_HEADER_V3_SIZE:
+            file_header_v3 = f.read(file_header_v3_size)
+            if len(file_header_v3) < file_header_v3_size:
                 raise ValueError(
-                    f"Version 0x0003 header is truncated (expected {FILE_HEADER_V3_SIZE} bytes, got {len(file_header_v3)})."
+                    f"Version 0x0003 header is truncated (expected {file_header_v3_size} bytes, got {len(file_header_v3)})."
                 )
 
             version, timestamp, header_size, parse_info_size, device_id, side = struct.unpack(
-                FILE_HEADER_V3_FORMAT, file_header_v3
+                file_header_v3_format, file_header_v3
             )
 
-            if header_size < FILE_HEADER_V3_SIZE or header_size > file_size:
+            if header_size < file_header_v3_size or header_size > file_size:
                 raise ValueError(
                     f"Invalid v0x0003 header size {header_size} for file size {file_size}."
                 )
@@ -1014,86 +1020,239 @@ def parse_oe_file(filename: str) -> tuple[pd.DataFrame, dict]:
             metadata['parse_info_size'] = parse_info_size
             metadata['device_id'] = device_id
             metadata['side'] = side
-            f.seek(header_size)
+            data_offset = header_size
 
-        while True:
-            record_start = f.tell()
-            header = f.read(10)
-            if len(header) == 0:
-                break
-            if len(header) < 10:
-                metadata['truncated'] = True
-                break
-            sid, size, time_us = struct.unpack('<BBQ', header)
-            if not _record_header_is_valid(sid, size):
-                resync_offset = _find_resync_offset(f, record_start, file_size)
-                if resync_offset is None:
-                    if _sid is not None and _sid in data.keys():
-                        data[_sid].pop()
+    return metadata, data_offset, file_size
+
+
+def _build_parse_ranges(data_offset: int, file_size: int, worker_count: int) -> list[tuple[int, int, bool, bool]]:
+    if worker_count <= 1:
+        return [(data_offset, file_size, True, True)]
+
+    chunk_size = PARSE_TARGET_CHUNK_SIZE
+    ranges = []
+    start = data_offset
+    index = 0
+    while start < file_size:
+        end = min(file_size, start + chunk_size)
+        ranges.append((start, end, index == 0, end >= file_size))
+        start = end
+        index += 1
+    return ranges
+
+
+def _parse_oe_chunk(args):
+    filename, start_offset, end_offset, is_first_chunk, is_last_chunk, file_size = args
+    chunk_data = {}
+    for sensor_name in ACTIVE_SENSORS:
+        sid = SENSOR_SID[sensor_name]
+        chunk_data[sid] = {'timestamps': [], 'values': []}
+
+    metadata = {
+        'truncated': False,
+        'resync_count': 0,
+        'resync_positions': [],
+    }
+
+    with open(filename, 'rb') as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            pos = start_offset
+
+            if not is_first_chunk:
+                resync_pos = _find_resync_offset_in_buffer(mm, start_offset - 1, file_size)
+                if resync_pos is None:
+                    return chunk_data, metadata
+                pos = start_offset - 1 + resync_pos
+
+            while pos + SENSOR_PACKET_HEADER_SIZE <= file_size:
+                if not is_last_chunk and pos >= end_offset:
+                    break
+
+                sid, size, time_us = struct.unpack_from(SENSOR_PACKET_HEADER_FORMAT, mm, pos)
+                if not _record_header_is_valid(sid, size):
+                    resync_offset = _find_resync_offset_in_buffer(mm, pos, file_size)
+                    if resync_offset is None:
+                        metadata['truncated'] = True
+                        break
+                    metadata['resync_count'] += 1
+                    metadata['resync_positions'].append(pos)
+                    pos += resync_offset
+                    continue
+
+                payload_start = pos + SENSOR_PACKET_HEADER_SIZE
+                payload_end = payload_start + size
+                if payload_end > file_size:
                     metadata['truncated'] = True
                     break
 
-                metadata['resync_count'] += 1
-                metadata['resync_positions'].append(record_start)
-                f.seek(record_start + resync_offset)
-                continue
-
-            _sid = sid
-            raw_data = f.read(size)
-            if len(raw_data) < size:
-                metadata['truncated'] = True
-                break
-            timestamp_s = time_us / 1e6
-
-            try:
-                if sid == SENSOR_SID["microphone"] or sid == SENSOR_SID["bone_acc"]:
-                    continue
-                elif sid in SENSOR_FORMATS:
+                if sid in SENSOR_FORMATS and sid not in (SENSOR_SID["microphone"], SENSOR_SID["bone_acc"]):
                     fmt = SENSOR_FORMATS[sid]
                     expected_size = struct.calcsize(fmt)
+                    timestamp_s = time_us / 1e6
 
-                    if size == expected_size:
-                        values = struct.unpack(fmt, raw_data)
-                        data[sid].append((timestamp_s, values))
-                    elif (size - 2) % expected_size == 0:
-                        delta = struct.unpack('<H', raw_data[-2:])[0] / 1e6
-                        raw_data = raw_data[:-2]
-                        for n in range(len(raw_data) // expected_size):
-                            values = struct.unpack(fmt, raw_data[n * expected_size: (n + 1) * expected_size])
-                            data[sid].append((timestamp_s + n * delta, values))
-            except struct.error:
-                pass
+                    try:
+                        if size == expected_size:
+                            values = struct.unpack_from(fmt, mm, payload_start)
+                            chunk_data[sid]['timestamps'].append(timestamp_s)
+                            chunk_data[sid]['values'].append(values)
+                        elif sid in (SENSOR_SID["ppg_right"], SENSOR_SID["ppg_left"]) and (size - 2) % expected_size == 0:
+                            sample_count = (size - 2) // expected_size
+                            delta = struct.unpack_from('<H', mm, payload_end - 2)[0] / 1e6
+                            raw_values = np.frombuffer(
+                                mm[payload_start:payload_end - 2], dtype='<u4'
+                            ).copy().reshape(sample_count, 4)
+                            chunk_data[sid]['timestamps'].extend(timestamp_s + np.arange(sample_count, dtype=np.float64) * delta)
+                            chunk_data[sid]['values'].extend(raw_values.tolist())
+                    except (struct.error, ValueError):
+                        metadata['truncated'] = True
+                        break
 
-    # Build DataFrame
-    dfs = []
+                pos = payload_end
+
+    for sid, sensor_chunk in chunk_data.items():
+        if sensor_chunk['timestamps']:
+            sensor_chunk['timestamps'] = np.asarray(sensor_chunk['timestamps'], dtype=np.float64)
+            sensor_chunk['values'] = np.asarray(sensor_chunk['values'])
+        else:
+            sensor_chunk['timestamps'] = np.empty(0, dtype=np.float64)
+            sensor_chunk['values'] = np.empty((0, len(LABELS[next(name for name in ACTIVE_SENSORS if SENSOR_SID[name] == sid)])))
+
+    return chunk_data, metadata
+
+
+def _emit_parse_progress(progress_callback: Optional[Callable[[int], None]],
+                         processed_bytes: int,
+                         total_bytes: int,
+                         last_percent: int) -> int:
+    if progress_callback is None or total_bytes <= 0:
+        return last_percent
+
+    percent = max(0, min(100, int((processed_bytes * 100) / total_bytes)))
+    if percent != last_percent:
+        progress_callback(percent)
+    return percent
+
+
+def _choose_parse_worker_count(data_size: int) -> int:
+    cpu_count = os.cpu_count() or 1
+    if cpu_count <= 1 or data_size < PARSE_MIN_PARALLEL_FILE_SIZE:
+        return 1
+
+    return max(
+        1,
+        min(MAX_PARALLEL_PARSE_WORKERS, cpu_count, math.ceil(data_size / PARSE_TARGET_CHUNK_SIZE))
+    )
+
+
+def _merge_chunk_results(chunk_results: list[tuple[dict, dict]]) -> tuple[dict, dict]:
+    parsed = {}
     sensor_counts = {}
-    
-    for name in ACTIVE_SENSORS:
-        sid = SENSOR_SID[name]
-        labels = LABELS.get(name, [])
-        sensor_counts[name] = len(data.get(sid, []))
-        
-        if sid in data and data[sid]:
-            times, values = zip(*data[sid])
-            df = pd.DataFrame(values, columns=labels)
-            df['timestamp'] = times
-            df.set_index('timestamp', inplace=True)
-            df = df[~df.index.duplicated(keep='first')]
-            dfs.append(df)
+    total_samples = 0
 
-    metadata['sensor_counts'] = sensor_counts
+    for sensor_name in ACTIVE_SENSORS:
+        sid = SENSOR_SID[sensor_name]
+        timestamps = []
+        values = []
+        for chunk_data, _ in chunk_results:
+            sensor_chunk = chunk_data[sid]
+            if sensor_chunk['timestamps'].size:
+                timestamps.append(sensor_chunk['timestamps'])
+                values.append(sensor_chunk['values'])
 
-    if dfs:
-        common_index = pd.Index([])
-        for df in dfs:
-            common_index = common_index.union(df.index)
-        common_index = common_index.sort_values()
-        reindexed_dfs = [df.reindex(common_index) for df in dfs]
-        result_df = pd.concat(reindexed_dfs, axis=1)
+        if timestamps:
+            parsed[sensor_name] = {
+                'timestamps': np.concatenate(timestamps),
+                'values': np.concatenate(values, axis=0),
+            }
+        else:
+            parsed[sensor_name] = {
+                'timestamps': np.empty(0, dtype=np.float64),
+                'values': np.empty((0, len(LABELS[sensor_name]))),
+            }
+
+        sensor_counts[sensor_name] = int(parsed[sensor_name]['timestamps'].size)
+        total_samples += sensor_counts[sensor_name]
+
+    merged_metadata = {
+        'truncated': any(chunk_metadata['truncated'] for _, chunk_metadata in chunk_results),
+        'resync_count': sum(chunk_metadata['resync_count'] for _, chunk_metadata in chunk_results),
+        'resync_positions': [
+            pos
+            for _, chunk_metadata in chunk_results
+            for pos in chunk_metadata['resync_positions']
+        ],
+        'sensor_counts': sensor_counts,
+        'total_samples': total_samples,
+    }
+
+    return parsed, merged_metadata
+
+
+def build_dataframe_from_parsed(parsed: dict) -> pd.DataFrame:
+    dfs = []
+    for sensor_name in ACTIVE_SENSORS:
+        sensor = parsed.get(sensor_name)
+        if not sensor or sensor['timestamps'].size == 0:
+            continue
+
+        df = pd.DataFrame(sensor['values'], columns=LABELS[sensor_name], index=sensor['timestamps'])
+        df.index.name = 'timestamp'
+        df = df[~df.index.duplicated(keep='first')]
+        dfs.append(df)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    common_index = pd.Index([])
+    for df in dfs:
+        common_index = common_index.union(df.index)
+    common_index = common_index.sort_values()
+    return pd.concat([df.reindex(common_index) for df in dfs], axis=1)
+
+
+def parse_oe_file(filename: str,
+                  progress_callback: Optional[Callable[[int], None]] = None) -> tuple[dict, dict]:
+    metadata, data_offset, file_size = _parse_file_header(filename)
+    requested_worker_count = _choose_parse_worker_count(file_size - data_offset)
+    worker_count = requested_worker_count
+    ranges = _build_parse_ranges(data_offset, file_size, worker_count)
+    parse_args = [
+        (filename, start, end, is_first, is_last, file_size)
+        for start, end, is_first, is_last in ranges
+    ]
+    total_bytes = max(1, file_size - data_offset)
+    last_percent = _emit_parse_progress(progress_callback, 0, total_bytes, -1)
+
+    if worker_count == 1:
+        chunk_results = [_parse_oe_chunk(parse_args[0])]
+        last_percent = _emit_parse_progress(progress_callback, total_bytes, total_bytes, last_percent)
     else:
-        result_df = pd.DataFrame()
+        try:
+            chunk_results = [None] * len(parse_args)
+            processed_bytes = 0
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                future_to_index = {
+                    executor.submit(_parse_oe_chunk, args): index
+                    for index, args in enumerate(parse_args)
+                }
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    chunk_results[index] = future.result()
+                    _, start, end, _, _, _ = parse_args[index]
+                    processed_bytes += end - start
+                    last_percent = _emit_parse_progress(progress_callback, processed_bytes, total_bytes, last_percent)
+        except (PermissionError, OSError, NotImplementedError):
+            # ponytail: host blocked process workers; fall back to the single-process path.
+            worker_count = 1
+            chunk_results = [_parse_oe_chunk((filename, data_offset, file_size, True, True, file_size))]
+            last_percent = _emit_parse_progress(progress_callback, total_bytes, total_bytes, last_percent)
 
-    return result_df, metadata
+    parsed, merged_metadata = _merge_chunk_results(chunk_results)
+    metadata.update(merged_metadata)
+    metadata['parse_workers'] = worker_count
+    metadata['parse_parallel_requested_workers'] = requested_worker_count
+    _emit_parse_progress(progress_callback, total_bytes, total_bytes, last_percent)
+    return parsed, metadata
 
 
 # =============================================================================
@@ -1106,6 +1265,7 @@ class WorkerSignals(QObject):
     scan_error = pyqtSignal(str)
     sync_complete = pyqtSignal(bool, str)
     progress = pyqtSignal(str)
+    parse_progress = pyqtSignal(object)
     parse_complete = pyqtSignal(object, dict)
     parse_error = pyqtSignal(str)
 
@@ -2064,7 +2224,7 @@ class FileConverterTab(QWidget):
     def __init__(self, signals: WorkerSignals):
         super().__init__()
         self.signals = signals
-        self.loaded_files: list[tuple[str, pd.DataFrame, dict]] = []
+        self.loaded_files: list[tuple[str, dict, dict]] = []
         self._create_widgets()
 
     def _create_widgets(self):
@@ -2119,7 +2279,9 @@ class FileConverterTab(QWidget):
 
         # Progress bar
         self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("%p%")
         self.progress.setVisible(False)
         top_layout.addWidget(self.progress)
 
@@ -2161,7 +2323,8 @@ class FileConverterTab(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-    def _create_sensor_plot(self, df: pd.DataFrame, sensor_name: str, labels: list, sample_count: int) -> QLabel:
+    def _create_sensor_plot(self, sensor_name: str, labels: list, sample_count: int,
+                            timestamps: np.ndarray, values: np.ndarray) -> QLabel:
         """Create a small plot for a sensor and return as QLabel with embedded image."""
         fig, ax = plt.subplots(figsize=(5, 1.5), dpi=100)
         
@@ -2179,14 +2342,30 @@ class FileConverterTab(QWidget):
         sensor_colors = colors.get(sensor_name, ['#3498db'] * len(labels))
         
         for i, label in enumerate(labels):
-            if label in df.columns:
-                series = df[label].dropna()
-                if len(series) > 4:
-                    series = series.iloc[2:-2]  # Trim edges
-                if len(series) > 0:
-                    color = sensor_colors[i % len(sensor_colors)]
-                    short_label = label.split('.')[-1] if '.' in label else label
-                    ax.plot(series.index, series.values, label=short_label, color=color, linewidth=0.5)
+            if i >= values.shape[1]:
+                continue
+
+            series_values = values[:, i]
+            if np.issubdtype(series_values.dtype, np.floating):
+                valid_mask = np.isfinite(series_values)
+            else:
+                valid_mask = np.ones(series_values.shape, dtype=bool)
+
+            series_times = timestamps[valid_mask]
+            series_values = series_values[valid_mask]
+
+            if series_values.size > 4:
+                series_times = series_times[2:-2]
+                series_values = series_values[2:-2]
+
+            if series_values.size == 0:
+                continue
+
+            stride = max(1, math.ceil(series_values.size / MAX_PREVIEW_POINTS))
+            color = sensor_colors[i % len(sensor_colors)]
+            short_label = label.split('.')[-1] if '.' in label else label
+            ax.plot(series_times[::stride], series_values[::stride],
+                    label=short_label, color=color, linewidth=0.5)
         
         title = sensor_name.replace('_', ' ').title()
         ax.set_title(f"{title} ({sample_count:,} samples)", fontsize=10, fontweight='bold')
@@ -2220,12 +2399,16 @@ class FileConverterTab(QWidget):
         if len(selected) == 1:
             idx = self.file_list.row(selected[0])
             if idx < len(self.loaded_files):
-                _, df, metadata = self.loaded_files[idx]
+                _, parsed, metadata = self.loaded_files[idx]
                 
                 # File info header
                 info_label = QLabel()
                 info_text = f"<b>📄 {metadata['filename']}</b><br>"
-                info_text += f"Version: {metadata['version']} | Rows: {len(df)}<br>"
+                info_text += (
+                    f"Version: {metadata['version']} | "
+                    f"Samples: {metadata.get('total_samples', 0):,} | "
+                    f"Workers: {metadata.get('parse_workers', 1)}<br>"
+                )
                 if metadata.get('resync_count', 0) > 0:
                     info_text += (
                         f"Recovered corrupt chunks: {metadata['resync_count']}"
@@ -2241,15 +2424,21 @@ class FileConverterTab(QWidget):
                 
                 # Collect plots for sensors with data
                 plot_widgets = []
-                for sensor_name in ACTIVE_SENSORS:
+                for sensor_name in oe_parser.ACTIVE_SENSORS:
                     count = metadata['sensor_counts'].get(sensor_name, 0)
                     if count > 0:
-                        labels = LABELS.get(sensor_name, [])
-                        # Filter to columns that exist in df
-                        existing_labels = [l for l in labels if l in df.columns]
-                        if existing_labels:
-                            plot_widget = self._create_sensor_plot(df, sensor_name, existing_labels, count)
-                            plot_widgets.append(plot_widget)
+                        labels = oe_parser.LABELS.get(sensor_name, [])
+                        sensor = parsed.get(sensor_name)
+                        if sensor is None or sensor['timestamps'].size == 0:
+                            continue
+                        plot_widget = self._create_sensor_plot(
+                            sensor_name,
+                            labels,
+                            count,
+                            sensor['timestamps'],
+                            sensor['values'],
+                        )
+                        plot_widgets.append(plot_widget)
                 
                 # Stack plots vertically (one per row)
                 for plot_widget in plot_widgets:
@@ -2280,6 +2469,7 @@ class FileConverterTab(QWidget):
             return
 
         self.progress.setVisible(True)
+        self.progress.setValue(0)
         self.import_btn.setEnabled(False)
         self.status_label.setText(f"Parsing {len(files)} file(s)...")
 
@@ -2289,20 +2479,33 @@ class FileConverterTab(QWidget):
     def _parse_thread(self, files: list[str]):
         try:
             results = []
-            for filepath in files:
-                df, metadata = parse_oe_file(filepath)
-                results.append((filepath, df, metadata))
+            file_count = len(files)
+            for file_index, filepath in enumerate(files, start=1):
+                def progress_callback(percent: int, *, _file_index=file_index, _filepath=filepath):
+                    self.signals.parse_progress.emit((_file_index, file_count, percent, os.path.basename(_filepath)))
+
+                parsed, metadata = oe_parser.parse_oe_file(filepath, progress_callback=progress_callback)
+                results.append((filepath, parsed, metadata))
             self.signals.parse_complete.emit(results, {})
         except Exception as e:
             self.signals.parse_error.emit(str(e))
+
+    def on_parse_progress(self, result):
+        file_index, file_count, percent, filename = result
+        self.progress.setValue(percent)
+        self.status_label.setText(
+            f"Parsing file {file_index}/{file_count}: {filename} ({percent}%)"
+        )
 
     def on_parse_complete(self, results: list, _):
         self.progress.setVisible(False)
         self.import_btn.setEnabled(True)
 
-        for filepath, df, metadata in results:
-            self.loaded_files.append((filepath, df, metadata))
-            self.file_list.addItem(f"📄 {metadata['filename']} ({len(df)} rows)")
+        for filepath, parsed, metadata in results:
+            self.loaded_files.append((filepath, parsed, metadata))
+            self.file_list.addItem(
+                f"📄 {metadata['filename']} ({metadata.get('total_samples', 0):,} samples)"
+            )
 
         self.export_btn.setEnabled(len(self.loaded_files) > 0)
         self.clear_btn.setEnabled(len(self.loaded_files) > 0)
@@ -2328,7 +2531,7 @@ class FileConverterTab(QWidget):
         if len(indices) == 1:
             # Single file - ask for save location
             idx = indices[0]
-            filepath, df, metadata = self.loaded_files[idx]
+            filepath, parsed, metadata = self.loaded_files[idx]
             default_name = os.path.splitext(filepath)[0] + ".csv"
             
             save_path, _ = QFileDialog.getSaveFileName(
@@ -2338,6 +2541,7 @@ class FileConverterTab(QWidget):
                 "CSV Files (*.csv);;All Files (*)"
             )
             if save_path:
+                df = oe_parser.build_dataframe_from_parsed(parsed)
                 df.to_csv(save_path, index_label='timestamp')
                 self.status_label.setText(f"✓ Exported to {os.path.basename(save_path)}")
                 QMessageBox.information(self, "Success", f"Exported to:\n{save_path}")
@@ -2347,9 +2551,10 @@ class FileConverterTab(QWidget):
             if directory:
                 exported = []
                 for idx in indices:
-                    filepath, df, metadata = self.loaded_files[idx]
+                    filepath, parsed, metadata = self.loaded_files[idx]
                     csv_name = os.path.splitext(metadata['filename'])[0] + ".csv"
                     save_path = os.path.join(directory, csv_name)
+                    df = oe_parser.build_dataframe_from_parsed(parsed)
                     df.to_csv(save_path, index_label='timestamp')
                     exported.append(csv_name)
                 
@@ -2421,6 +2626,7 @@ class OpenEarableToolApp(QMainWindow):
         self.signals.progress.connect(self._on_progress)
 
         # File converter signals
+        self.signals.parse_progress.connect(self.file_tab.on_parse_progress)
         self.signals.parse_complete.connect(self.file_tab.on_parse_complete)
         self.signals.parse_error.connect(self.file_tab.on_parse_error)
 
@@ -2449,6 +2655,7 @@ class OpenEarableToolApp(QMainWindow):
 
 
 def main():
+    multiprocessing.freeze_support()
     app = QApplication(sys.argv)
     window = OpenEarableToolApp()
     window.show()
