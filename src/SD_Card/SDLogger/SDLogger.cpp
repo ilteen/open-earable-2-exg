@@ -54,6 +54,9 @@ static struct k_poll_event logger_evt =
 
 namespace {
 
+constexpr uint32_t SD_SYNC_INTERVAL_BYTES = SD_BLOCK_SIZE * 16;
+uint32_t unsynced_bytes = 0;
+
 constexpr uint8_t OE_HEADER_SIDE_LEFT = 0x00;
 constexpr uint8_t OE_HEADER_SIDE_RIGHT = 0x01;
 constexpr uint8_t OE_HEADER_SIDE_UNKNOWN = 0xFF;
@@ -184,9 +187,10 @@ void SDLogger::sensor_sd_task() {
 
             // Write the claimed bytes under file lock.
             size_t write_size = claimed;
+            bool sync = (unsynced_bytes + claimed) >= SD_SYNC_INTERVAL_BYTES;
             int written;
             k_mutex_lock(&file_mutex, K_FOREVER);
-            written = sdlogger.sd_card->write((char*)data, &write_size, false);
+            written = sdlogger.sd_card->write((char*)data, &write_size, sync);
             k_mutex_unlock(&file_mutex);
 
             if (written < 0) {
@@ -197,6 +201,12 @@ void SDLogger::sensor_sd_task() {
                 // Wakeups will continue; user can call end().
                 reset_logger_signal();
                 continue;
+            }
+
+            if (sync) {
+                unsynced_bytes = 0;
+            } else {
+                unsynced_bytes += (uint32_t)written;
             }
 
             // Advance ring buffer by the number of bytes actually written.
@@ -293,6 +303,7 @@ int SDLogger::begin(const std::string& filename) {
     // Ensure no concurrent end()/flush is running
     atomic_clear(&g_stop_writing);
     atomic_clear(&g_sd_removed);
+    unsynced_bytes = 0;
 
     current_file = full_filename;
     is_open = true;
@@ -364,7 +375,7 @@ int SDLogger::write_header() {
     int ret;
     size_t bytes_to_write = header_size;
     k_mutex_lock(&file_mutex, K_FOREVER);
-    ret = sd_card->write(reinterpret_cast<char*>(header_buffer), &bytes_to_write, false);
+    ret = sd_card->write(reinterpret_cast<char*>(header_buffer), &bytes_to_write, true);
     k_mutex_unlock(&file_mutex);
     k_free(header_buffer);
 
@@ -490,6 +501,17 @@ int SDLogger::flush() {
             k_yield();
         }
     }
+
+    k_mutex_lock(&file_mutex, K_FOREVER);
+    int sync_ret = sd_card->sync();
+    k_mutex_unlock(&file_mutex);
+    if (sync_ret < 0) {
+        state_indicator.set_sd_state(SD_FAULT);
+        LOG_ERR("Failed to sync SD file: %d", sync_ret);
+        return sync_ret;
+    }
+
+    unsynced_bytes = 0;
 
     return (int)total_written;
 }
