@@ -1,0 +1,18 @@
+[project]
+name = "open-earable-2-exg"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bleak>=1.1.1",
+    "matplotlib>=3.5.0",
+    "numpy>=1.20.0",
+    "pandas>=1.4.0",
+    "pyinstaller>=6.21.0",
+    "pyqt6==6.4.2",
+    "pyqt6-qt6==6.4.3",
+    "pyqt6-sip==13.4.0",
+    "pyserial>=3.5",
+    "scipy>=1.18.0",
+]
