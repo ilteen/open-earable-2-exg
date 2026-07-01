@@ -4,7 +4,6 @@
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all, collect_dynamic_libs
 
 # Force-include all pandas submodules
-hiddenimports += collect_submodules('pandas')
 import sys
 import os
 
@@ -33,6 +32,12 @@ datas += pandas_datas
 binaries += pandas_binaries
 hiddenimports += pandas_hiddenimports
 
+# Collect scipy
+scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
+datas += scipy_datas
+binaries += scipy_binaries
+hiddenimports += scipy_hiddenimports
+
 # Find and include pyexpat DLL explicitly from Python's DLLs folder
 python_dir = os.path.dirname(sys.executable)
 dlls_dir = os.path.join(python_dir, 'DLLs')
@@ -50,6 +55,7 @@ a = Analysis(
     pathex=[],
     binaries=binaries,
     datas=datas,
+    hiddenimports=[
         'bleak.backends.corebluetooth',
         'bleak.backends.bluezdbus',
         'bleak.backends.winrt',
@@ -66,12 +72,14 @@ a = Analysis(
         'pandas._libs',
         'pandas._libs.tslibs.base',
         'pkg_resources.py2_warn',
+        'scipy',
+        'scipy.signal',
     ] + hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'torch', 'torchvision', 'tensorflow', 'scipy',
+        'torch', 'torchvision', 'tensorflow', 
         'IPython', 'jupyter', 'notebook', 'sympy',
         'PyQt5', 'PySide2', 'PySide6',
     ],

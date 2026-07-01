@@ -20,3 +20,6 @@ tools/time_sync/build
 tools/time_sync/dist/OpenEarableTools
 tools/time_sync/dist
 dist
+tools/time_sync/__pycache__
+tools/time_sync/build
+tools/time_sync/dist

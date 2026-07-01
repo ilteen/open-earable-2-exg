@@ -484,6 +484,10 @@ USB_ACK_SIZE = 4        # magic(1) + op(1) + cmd(1) + status(1)
 
 USB_TIME_SYNC_SAMPLES = 10  # More samples for USB since it's faster
 
+OPENEARABLE_USB_IDS = {
+    (0x2FE3, 0x0004),  # Zephyr test VID + OpenEarable ExG product PID
+}
+
 
 def find_openearable_usb_ports() -> list[tuple[str, str, str]]:
     """Find USB serial ports that are OpenEarable devices.
@@ -502,11 +506,18 @@ def find_openearable_usb_ports() -> list[tuple[str, str, str]]:
         display_name = product if product else description
         
         text = f"{description} {product} {manufacturer} {hwid}".lower()
+        vid_pid = (port.vid, port.pid)
         is_openearable = (
-            "openearable" in text
+            vid_pid in OPENEARABLE_USB_IDS
+            or "vid:pid=2fe3:0004" in text
+            or "openearable" in text
+            or "open-earable" in text
+            or "open earable" in text
         )
 
         if is_openearable:
+            if not display_name or display_name.lower() == "usb serial device":
+                display_name = "OpenEarable ExG"
             ports.append((port.device, display_name, hwid))
     return ports
 
