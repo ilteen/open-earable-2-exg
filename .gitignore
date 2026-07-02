@@ -22,4 +22,8 @@ tools/time_sync/dist
 dist
 tools/time_sync/__pycache__
 tools/time_sync/build
+<<<<<<< HEAD
 tools/time_sync/dist
+=======
+tools/time_sync/dist
+>>>>>>> origin/main
