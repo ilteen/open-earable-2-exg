@@ -93,9 +93,8 @@ static bool fuel_gauge_shutdown_confirmed(const battery_settings &settings)
         return false;
     }
 
-    const float threshold =
-        settings.u_vlo + ((float)CONFIG_BATTERY_SYSDOWN_SET_OFFSET / 1000.0f);
-    if (status.SYSDWN && voltage < threshold) {
+    const float threshold = settings.u_vlo + 0.05f;
+    if (voltage < threshold) {
         LOG_WRN("Battery shutdown confirmed at %.3f V (threshold %.3f V)",
                 (double)voltage, (double)threshold);
         return true;
@@ -104,6 +103,20 @@ static bool fuel_gauge_shutdown_confirmed(const battery_settings &settings)
     LOG_WRN("Ignoring transient/early SYSDWN at %.3f V (shutdown threshold %.3f V)",
             (double)voltage, (double)threshold);
     return false;
+}
+
+static void log_charging_metrics(void)
+{
+    const float current = fuel_gauge.current();
+    const float voltage = fuel_gauge.voltage();
+    const float soc = fuel_gauge.state_of_charge();
+    const chrg_state charge_ctrl = battery_controller.read_charging_control();
+    const float target_current = charge_ctrl.enabled ? charge_ctrl.mAh : 0.0f;
+
+    LOG_DBG("Voltage: %.3f V", voltage);
+    LOG_DBG("Charging current: %.3f mA", current);
+    LOG_DBG("Target current: %.3f mA", target_current);
+    LOG_DBG("State of charge: %.3f %%", soc);
 }
 
 //K_TIMER_DEFINE(PowerManager::charge_timer, PowerManager::charge_timer_handler, NULL);
@@ -297,15 +310,15 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
             }
 
             current = fuel_gauge.current();
-            target_current = fuel_gauge.charge_current();
+            {
+                const chrg_state charge_ctrl = battery_controller.read_charging_control();
+                target_current = charge_ctrl.enabled ? charge_ctrl.mAh : 0.0f;
+            }
             voltage = fuel_gauge.voltage();
 
             msg.charging_state = POWER_CONNECTED;
 
-            LOG_DBG("Voltage: %.3f V", voltage);
-            LOG_DBG("Charging current: %.3f mA", current);
-            LOG_DBG("Target current: %.3f mA", target_current);
-            LOG_DBG("State of charge: %.3f %%", fuel_gauge.state_of_charge());
+            log_charging_metrics();
 
             // check if target current is met (if not tapering)
             if (current > 0.8 * target_current - 2 * power_manager._battery_settings.i_term) {
@@ -336,7 +349,9 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
             bool power_connected = battery_controller.power_connected();
 
             if (!charger_fault_active && !ts_fault_active && power_connected && current > 0.5f * power_manager._battery_settings.i_term) {
-                LOG_WRN("charging state reported fault without fault bits; treating as charging");
+                LOG_INF("charging state: charging");
+                LOG_DBG("charging state reported fault without fault bits; treating as charging");
+                log_charging_metrics();
                 msg.charging_state = CHARGING;
                 break;
             }
@@ -353,6 +368,8 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
 
                 if (recovered_state == 1 || recovered_current > CHARGER_RECOVERY_MIN_CURRENT_MA) {
                     LOG_WRN("charger recovered from fault state");
+                    LOG_INF("charging state: charging");
+                    log_charging_metrics();
                     msg.charging_state = recovered_current > 0.5f * power_manager._battery_settings.i_term ?
                         CHARGING : POWER_CONNECTED;
                     break;
@@ -435,8 +452,9 @@ int PowerManager::begin() {
     uint8_t bat_state = battery_controller.read_charging_state();
 
     button_state btn = battery_controller.read_button_state();
+    const bool button_pressed = btn.wake_2 || (earable_btn.getState() == BUTTON_PRESS);
 
-    power_on = btn.wake_2;
+    power_on = button_pressed;
 
     // get reset reason
     uint32_t reset_reas = NRF_RESET->RESETREAS;
@@ -475,7 +493,7 @@ int PowerManager::begin() {
         printk("Reset durch Watchdog-Timer\n");
     }*/
 
-    if (intentional_power_off_reset) {
+    if (intentional_power_off_reset && !button_pressed) {
         LOG_INF("Intentional power-off reset detected; entering charging-only mode");
         power_on = false;
     } else if (keep_power_on_after_reset(reset_reas)) {
@@ -798,7 +816,9 @@ int PowerManager::power_down(bool fault) {
     stop_sensor_manager();
 
     bool charging = battery_controller.power_connected();
-    bool low_battery_shutdown = fuel_gauge.read_battery_status(battery_status) && battery_status.SYSDWN;
+    bool low_battery_shutdown =
+        (fuel_gauge.read_battery_status(battery_status) && battery_status.SYSDWN) ||
+        fuel_gauge_shutdown_confirmed(_battery_settings);
 
     if (!charging) {
         ret = battery_controller.set_wakeup_int();
