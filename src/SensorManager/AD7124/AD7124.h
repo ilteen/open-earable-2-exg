@@ -103,16 +103,30 @@ public:
     
     int setAdcControl(OperatingMode mode, PowerMode power_mode, bool ref_en = true);
     int setConfig(uint8_t setup, ReferenceSource ref, PGA gain, bool bipolar);
-    int setFilter(uint8_t setup, FilterType filter_type, uint16_t fs, bool rej60 = false);
+    int setFilter(uint8_t setup, FilterType filter_type, uint16_t fs, bool rej60 = false, bool single_cycle_settling = false);
     int setChannel(uint8_t ch, uint8_t setup, AnalogInput ainp, AnalogInput ainm, bool enable = false);
     
-    int readRaw(int32_t *value);
+    int readRaw(int32_t *value, uint8_t *channel = nullptr);
+    float rawToVolts(int32_t raw) const;
     float readVolts(uint8_t ch);
     
     int waitForConvReady(uint32_t timeout_ms);
     int getCurrentChannel();
     
     int readRegister(uint8_t addr, uint32_t *value, uint8_t size);
+
+    // interrupt control
+
+    // configure RDY interrupt
+    int enableReadyInterrupt(gpio_callback_handler_t handler, struct gpio_callback *cb_struct);
+
+    // must remask the RDY interrupt after rigger before work
+    void maskReadyInterrupt();
+
+    // reenable RDY interrupt after work is done
+    void unmaskReadyInterrupt();
+
+    void disableReadyInterrupt();
 
 private:
     // Software SPI GPIO pins (3-wire mode, CS hardwired to GND)

@@ -1,0 +1,6 @@
+Usage: ./tools/flash/flash.sh --snr <serial_number> [--left|--right] [--standalone] [--hw x.y.z]
+  --snr: Device serial number (required)
+  --left: Flash left earable configuration
+  --right: Flash right earable configuration
+  --standalone: Configure device for standalone mode
+  --hw: Set hardware version (format: x.y.z, e.g., 2.0.0)

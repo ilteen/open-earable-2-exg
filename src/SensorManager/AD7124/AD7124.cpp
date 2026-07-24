@@ -225,7 +225,8 @@ int AD7124::noCheckReadRegister(uint8_t addr, uint32_t *value, uint8_t size) {
     
     // Ensure clock returns to idle (HIGH for Mode 3) and hold for transaction boundary
     gpio_pin_set(gpio_dev, sck_pin, 1);
-    k_usleep(500);  // Longer inter-transaction delay for 3-wire mode
+    // EDIT: was 500 then 25 (which produced 4x slower rate than expected)
+    // k_usleep(0);  // Longer inter-transaction delay for 3-wire mode
     
     // Build the result
     *value = 0;
@@ -427,14 +428,14 @@ int AD7124::setConfig(uint8_t setup, ReferenceSource ref, PGA gain, bool bipolar
 /**
  * @brief Configure filter for a setup
  */
-int AD7124::setFilter(uint8_t setup, FilterType filter_type, uint16_t fs, bool rej60) {
+int AD7124::setFilter(uint8_t setup, FilterType filter_type, uint16_t fs, bool rej60, bool single_cycle_settling) {
     if (setup > 7) {
         return -EINVAL;
     }
     
     uint32_t value = AD7124_FILT_REG_FILTER(static_cast<uint32_t>(filter_type)) |
                      AD7124_FILT_REG_FS(fs) |
-                     (rej60 ? AD7124_FILT_REG_REJ60 : 0);
+                     (rej60 ? AD7124_FILT_REG_REJ60 : 0) | (single_cycle_settling ? AD7124_FILT_REG_SINGLE_CYCLE : 0);
     
     // Update local register copy
     regs[33 + setup].value = value;
@@ -498,7 +499,7 @@ int AD7124::waitForConvReady(uint32_t timeout_ms) {
  * @brief Read conversion result
  * NOTE: When DATA_STATUS bit is set in ADC_CONTROL, must read 4 bytes (3 data + 1 status)
  */
-int AD7124::readRaw(int32_t *value) {
+int AD7124::readRaw(int32_t *value, uint8_t *channel) {
     int32_t ret;
     uint32_t data = 0;
     
@@ -519,12 +520,33 @@ int AD7124::readRaw(int32_t *value) {
         regs[0].value = data & 0xFF;
         // Extract 24-bit data from upper 3 bytes
         data = data >> 8;
+        if (channel != nullptr) {
+            *channel = regs[0].value & 0x0F; // CH_ACTIVE[3:0]
+        }
+    } else if (channel != nullptr) {
+      *channel = 0xFF;
     }
     
     // Get the read result (keep as unsigned 24-bit for offset binary handling)
     *value = (int32_t)(data & 0xFFFFFF);
     
     return 0;
+}
+
+
+/**
+ * @brief Read voltage from ADC
+ */
+float AD7124::rawToVolts(int32_t raw) const {
+  if (bipolar_mode) {
+        // Bipolar uses offset binary: 0x800000 = 0V, 0x000000 = -Vref, 0xFFFFFF = +Vref
+        // Subtract mid-scale (0x800000) to convert to signed, then scale
+        int32_t signed_raw = raw - 0x800000;
+        return ((float)signed_raw / 8388608.0f) * (ref_voltage / (float)gain_value);
+    } else {
+        // Unipolar: 0 to Vref
+        return ((float)raw / 16777216.0f) * (ref_voltage / (float)gain_value);
+    }
 }
 
 /**
@@ -539,18 +561,7 @@ float AD7124::readVolts(uint8_t ch) {
     }
     
     // Convert to voltage
-    float voltage;
-    if (bipolar_mode) {
-        // Bipolar uses offset binary: 0x800000 = 0V, 0x000000 = -Vref, 0xFFFFFF = +Vref
-        // Subtract mid-scale (0x800000) to convert to signed, then scale
-        int32_t signed_raw = raw - 0x800000;
-        voltage = ((float)signed_raw / 8388608.0f) * (ref_voltage / (float)gain_value);
-    } else {
-        // Unipolar: 0 to Vref
-        voltage = ((float)raw / 16777216.0f) * (ref_voltage / (float)gain_value);
-    }
-    
-    return voltage;
+    return rawToVolts(raw);
 }
 
 /**
@@ -564,4 +575,31 @@ int AD7124::getCurrentChannel() {
     }
     
     return (int)AD7124_STATUS_REG_CH_ACTIVE(status);
+}
+
+
+// interrupt control functions
+int AD7124::enableReadyInterrupt(gpio_callback_handler_t handler, struct gpio_callback *cb_struct) {
+    int ret = gpio_pin_interrupt_configure(gpio_dev, miso_pin, GPIO_INT_DISABLE);
+    if (ret) return ret;
+
+    gpio_init_callback(cb_struct, handler, BIT(miso_pin));
+    ret = gpio_add_callback(gpio_dev, cb_struct);
+    if (ret) return ret;
+
+    // Stay masked until start explicitly enables it.
+    return 0;
+}
+
+void AD7124::maskReadyInterrupt() {
+    gpio_pin_interrupt_configure(gpio_dev, miso_pin, GPIO_INT_DISABLE);
+}
+
+void AD7124::unmaskReadyInterrupt() {
+    // RDY is active LOW - falling edge means "conversion ready".
+    gpio_pin_interrupt_configure(gpio_dev, miso_pin, GPIO_INT_EDGE_FALLING);
+}
+
+void AD7124::disableReadyInterrupt() {
+    gpio_pin_interrupt_configure(gpio_dev, miso_pin, GPIO_INT_DISABLE);
 }

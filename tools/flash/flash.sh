@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default parameters
-CLOCKSPEED=8000
+CLOCKSPEED=4000
 CHIP=NRF53
 
 # Function to show usage
