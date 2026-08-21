@@ -7,6 +7,7 @@
 #include <zephyr/settings/settings.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
 #include <string.h>
 #include <limits.h>
@@ -49,7 +50,7 @@ struct __packed time_sync_packet {
 };
 
 static int64_t time_offset_us = 0;
-static bool time_synced = false;
+static atomic_t time_synced;
 static time_sync_callback_t time_sync_callback = NULL;
 
 #define TIME_SYNC_RETAINED_MAGIC 0x5453594EU /* "TSYN" */
@@ -342,8 +343,7 @@ void time_sync_register_callback(time_sync_callback_t callback) {
 }
 
 static void notify_synced(void) {
-    if (!time_synced) {
-        time_synced = true;
+    if (atomic_cas(&time_synced, 0, 1)) {
         LOG_INF("Time synchronized");
         if (time_sync_callback != NULL) {
             k_work_submit_to_queue(&sensor_work_q, &time_sync_work);
@@ -382,12 +382,12 @@ void time_sync_apply_offset(int64_t delta_us) {
 }
 
 bool time_sync_is_synced(void) {
-    return time_synced;
+    return atomic_get(&time_synced) != 0;
 }
 
 void time_sync_persist_now_snapshot(void)
 {
-	if (!time_synced) {
+	if (!time_sync_is_synced()) {
 		return;
 	}
 
@@ -418,7 +418,7 @@ int init_time_sync(void) {
 		settings_time_sync_offset_valid = false;
 		settings_last_unix_valid = false;
 		time_offset_us = 0;
-		time_synced = false;
+		atomic_clear(&time_synced);
 		return 0;
 	}
 
@@ -453,7 +453,7 @@ int init_time_sync(void) {
 	return 0;
 }
 
-inline uint64_t get_current_time_us() {
+uint64_t get_current_time_us(void) {
    uint64_t base_u = get_time_since_boot_us();
    int64_t base_s = (base_u > (uint64_t)INT64_MAX) ? INT64_MAX : (int64_t)base_u;
    int64_t now_s = base_s + time_offset_us;
@@ -468,7 +468,7 @@ inline uint64_t get_current_time_us() {
     return (uint64_t)now_s;
 }
 
-inline uint64_t get_time_since_boot_us() {
+uint64_t get_time_since_boot_us(void) {
     return k_ticks_to_us_floor64(k_uptime_ticks());
 }
 
