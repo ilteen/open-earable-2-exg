@@ -163,23 +163,34 @@ void BQ25120a::setup(const battery_settings &_battery_settings) {
         enter_high_impedance();
 }
 
+bool BQ25120a::read_charging_state(uint8_t &status) {
+        return readReg(registers::CTRL, &status, sizeof(status));
+}
+
+bool BQ25120a::read_fault(uint8_t &status) {
+        return readReg(registers::FAULT, &status, sizeof(status));
+}
+
+bool BQ25120a::read_ts_fault(uint8_t &status) {
+        return readReg(registers::TS_FAULT, &status, sizeof(status));
+}
+
 uint8_t BQ25120a::read_charging_state() {
         uint8_t status = 0;
-        bool ret = readReg(registers::CTRL, (uint8_t *) &status, sizeof(status));
-
+        read_charging_state(status);
         return status;
 }
 
 uint8_t BQ25120a::read_fault() {
         uint8_t status = 0;
-        bool ret = readReg(registers::FAULT, (uint8_t *) &status, sizeof(status));
+        read_fault(status);
 
         return status;
 }
 
 uint8_t BQ25120a::read_ts_fault() {
         uint8_t status = 0;
-        bool ret = readReg(registers::TS_FAULT, (uint8_t *) &status, sizeof(status));
+        read_ts_fault(status);
 
         return status;
 }
@@ -212,8 +223,12 @@ chrg_state BQ25120a::read_charging_control() {
 
 uint8_t BQ25120a::write_charging_control(float mA) {
         uint8_t status = 0;
-        bool ret = readReg(registers::CHARGE_CTRL, &status, sizeof(status));
+        if (!readReg(registers::CHARGE_CTRL, &status, sizeof(status))) {
+                LOG_WRN("Not updating charge current because CHARGE_CTRL could not be read");
+                return status;
+        }
 
+        const uint8_t previous_status = status;
         status &= 0x3;
 
         if (mA >= 40) {
@@ -225,7 +240,9 @@ uint8_t BQ25120a::write_charging_control(float mA) {
                 status |= (((uint16_t)(mA - 5)) & 0x1F) << 2;
         }
 
-        writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
+        if (status != previous_status) {
+                writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
+        }
 
         return status;
 }

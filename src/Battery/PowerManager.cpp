@@ -38,9 +38,18 @@
 LOG_MODULE_REGISTER(power_manager, LOG_LEVEL_DBG);
 
 static constexpr float RECORDING_CHARGE_HEADROOM_MA = 150.0f;
-static constexpr float CHARGER_RECOVERY_MIN_CURRENT_MA = 5.0f;
-static constexpr float CHARGER_RECOVERY_VOLTAGE_MARGIN_V = 0.02f;
-static constexpr int CHARGER_RECOVERY_SETTLE_MS = 20;
+static constexpr float CHARGE_TEMPERATURE_HYSTERESIS_C = 2.0f;
+
+static constexpr uint8_t CHARGER_STATE_MASK = BIT(7) | BIT(6);
+static constexpr uint8_t CHARGER_RESET_FAULT = BIT(4);
+static constexpr uint8_t CHARGER_SAFETY_TIMER_FAULT = BIT(3);
+static constexpr uint8_t CHARGER_VINDPM_ACTIVE = BIT(2);
+static constexpr uint8_t CHARGER_VIN_OVERVOLTAGE = BIT(7);
+static constexpr uint8_t CHARGER_VIN_UNDERVOLTAGE = BIT(6);
+static constexpr uint8_t CHARGER_BATTERY_UNDERVOLTAGE = BIT(5);
+static constexpr uint8_t CHARGER_BATTERY_OVERCURRENT = BIT(4);
+static constexpr uint8_t CHARGER_TS_ENABLED = BIT(7);
+static constexpr uint8_t CHARGER_TS_FAULT_MASK = BIT(6) | BIT(5);
 
 #define INTENTIONAL_POWER_OFF_MAGIC 0x504F4646U /* "POFF" */
 
@@ -109,6 +118,7 @@ static void log_charging_metrics(void)
 {
     const float current = fuel_gauge.current();
     const float voltage = fuel_gauge.voltage();
+    const float temperature = fuel_gauge.temperature();
     const float soc = fuel_gauge.state_of_charge();
     const chrg_state charge_ctrl = battery_controller.read_charging_control();
     const float target_current = charge_ctrl.enabled ? charge_ctrl.mAh : 0.0f;
@@ -116,6 +126,7 @@ static void log_charging_metrics(void)
     LOG_DBG("Voltage: %.3f V", voltage);
     LOG_DBG("Charging current: %.3f mA", current);
     LOG_DBG("Target current: %.3f mA", target_current);
+    LOG_DBG("Battery temperature: %.1f C", temperature);
     LOG_DBG("State of charge: %.3f %%", soc);
 }
 
@@ -250,14 +261,11 @@ void PowerManager::battery_controller_work_handler(struct k_work * work) {
 
 void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
     int ret;
-    battery_level_status status;
 
     msg.battery_level = fuel_gauge.state_of_charge();
 
     bat_status bat = {};
     bool battery_status_valid = fuel_gauge.read_battery_status(bat);
-
-    power_manager.get_battery_status(status);
 
     // full discharge
     //if (bat.FD) k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
@@ -281,10 +289,16 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
 
     battery_controller.exit_high_impedance();
 
-    uint16_t charging_state = battery_controller.read_charging_state() >> 6;
+    uint8_t charger_status = 0;
+    const bool charger_status_valid = battery_controller.read_charging_state(charger_status);
+    const uint16_t charging_state = (charger_status & CHARGER_STATE_MASK) >> 6;
     gauge_status gs;
 
-    switch (charging_state) {
+    if (!charger_status_valid) {
+        LOG_WRN("Unable to read charger status");
+        msg.charging_state = battery_controller.power_connected() ?
+            POWER_CONNECTED : DISCHARGING;
+    } else switch (charging_state) {
         case 0:
             LOG_INF("charging state: discharge");
             msg.charging_state = DISCHARGING;
@@ -337,86 +351,81 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
             LOG_INF("charging state: done");
             msg.charging_state = FULLY_CHARGED;
             break;
-        case 3:
-            uint8_t fault = battery_controller.read_fault();
-            uint8_t ts_fault = battery_controller.read_ts_fault();
-            bool charger_fault_active = (fault & 0xF0) != 0;
-            bool ts_fault_active = ((ts_fault >> 5) & 0x7) != 0;
+        case 3: {
+            uint8_t fault = 0;
+            uint8_t ts_fault = 0;
+            const bool fault_valid = battery_controller.read_fault(fault);
+            const bool ts_fault_valid = battery_controller.read_ts_fault(ts_fault);
+            const bool safety_timer_fault = (charger_status & CHARGER_SAFETY_TIMER_FAULT) != 0;
+            const bool vindpm_active = (charger_status & CHARGER_VINDPM_ACTIVE) != 0;
+            const bool charger_fault_active = fault_valid && (fault & 0xF0) != 0;
+            const uint8_t ts_fault_code = (ts_fault & CHARGER_TS_FAULT_MASK) >> 5;
+            const bool ts_fault_active = ts_fault_valid && ts_fault_code != 0;
             // Battery fuel gauge status
-            bat_status status = fuel_gauge.battery_status();
+            bat_status gauge_bat = fuel_gauge.battery_status();
             voltage = fuel_gauge.voltage();
             current = fuel_gauge.current();
-            bool power_connected = battery_controller.power_connected();
+            const bool power_connected = battery_controller.power_connected();
 
-            if (!charger_fault_active && !ts_fault_active && power_connected && current > 0.5f * power_manager._battery_settings.i_term) {
+            LOG_WRN("Charger status 0x%02x, fault 0x%02x%s, TS 0x%02x%s",
+                    charger_status, fault, fault_valid ? "" : " (read failed)",
+                    ts_fault, ts_fault_valid ? "" : " (read failed)");
+
+            if (fault_valid && ts_fault_valid && !safety_timer_fault &&
+                !vindpm_active && !charger_fault_active && !ts_fault_active &&
+                power_connected &&
+                current > 0.5f * power_manager._battery_settings.i_term) {
                 LOG_INF("charging state: charging");
-                LOG_DBG("charging state reported fault without fault bits; treating as charging");
+                LOG_WRN("Charger reports an undocumented transient state while current is flowing; treating as charging");
                 log_charging_metrics();
                 msg.charging_state = CHARGING;
                 break;
             }
 
-            if (power_connected &&
-                voltage < power_manager._battery_settings.u_term - CHARGER_RECOVERY_VOLTAGE_MARGIN_V &&
-                (!battery_status_valid || !bat.SYSDWN)) {
-                LOG_WRN("charging state fault; attempting charger recovery");
-                power_manager.check_battery();
-                k_msleep(CHARGER_RECOVERY_SETTLE_MS);
-
-                const uint16_t recovered_state = battery_controller.read_charging_state() >> 6;
-                const float recovered_current = fuel_gauge.current();
-
-                if (recovered_state == 1 || recovered_current > CHARGER_RECOVERY_MIN_CURRENT_MA) {
-                    LOG_WRN("charger recovered from fault state");
-                    LOG_INF("charging state: charging");
-                    log_charging_metrics();
-                    msg.charging_state = recovered_current > 0.5f * power_manager._battery_settings.i_term ?
-                        CHARGING : POWER_CONNECTED;
-                    break;
-                }
-            }
-
             LOG_WRN("charging state: fault");
             msg.charging_state = FAULT;
 
-            // cleared after read
-            if (fault & (1 << 4)) {
-                LOG_WRN("Input over voltage.");
+            if (charger_status & CHARGER_RESET_FAULT) {
+                LOG_WRN("Charger reset/button timer event (latched status)");
             }
-
-            // as long as fault exists
-            if (fault & (1 << 5)) {
+            if (safety_timer_fault) {
+                LOG_ERR("Charge safety timer expired; charging remains disabled until power or CD is cycled");
+            }
+            if (vindpm_active) {
+                LOG_WRN("Input voltage regulation is active (VINDPM)");
+            }
+            if (fault & CHARGER_VIN_OVERVOLTAGE) {
+                LOG_WRN("Input overvoltage");
+            }
+            if (fault & CHARGER_VIN_UNDERVOLTAGE) {
+                LOG_WRN("Input undervoltage");
+            }
+            if (fault & CHARGER_BATTERY_UNDERVOLTAGE) {
                 if (power_connected && current > 0.5 * power_manager._battery_settings.i_term) {
                     msg.charging_state = PRECHARGING;
                 }
                 LOG_WRN("Battery under voltage: %.3f V", voltage);
             }
-
-            // cleared after read
-            if (fault & (1 << 6)) {
-                LOG_WRN("Input under voltage");
+            if (fault & CHARGER_BATTERY_OVERCURRENT) {
+                LOG_WRN("Battery overcurrent");
             }
 
-            // as long as fault exists
-            if (fault & (1 << 7)) {
-                LOG_WRN("Battery over voltage");
-            }
-
-            if ((ts_fault >> 5) & 0x7) {
-                LOG_WRN("TS_ENABLED: %i, TS FAULT: %i", ts_fault >> 7, (ts_fault >> 5) & 0x3);
-                battery_controller.setup(power_manager._battery_settings);
+            if (ts_fault_active) {
+                LOG_WRN("TS enabled: %i, TS fault: %i",
+                        (ts_fault & CHARGER_TS_ENABLED) != 0, ts_fault_code);
             }
 
             LOG_DBG("------------------ Battery Info ------------------");
             LOG_DBG("Battery Status:");
             LOG_DBG("  Present: %d, Full Charge: %d, Full Discharge: %d", 
-                    status.BATTPRES, status.FC, status.FD);
+                    gauge_bat.BATTPRES, gauge_bat.FC, gauge_bat.FD);
 
             // Basic measurements
             LOG_DBG("Basic Measurements:");
             LOG_DBG("  Voltage: %.3f V", voltage);
             LOG_DBG("  Current: %.3f mA", current);
             break;
+        }
     }
 
     battery_controller.enter_high_impedance();
@@ -449,7 +458,11 @@ int PowerManager::begin() {
 
     battery_controller.exit_high_impedance();
 
-    uint8_t bat_state = battery_controller.read_charging_state();
+    uint8_t bat_state = 0;
+    const bool charger_boot_status_valid = battery_controller.read_charging_state(bat_state);
+    if (!charger_boot_status_valid) {
+        LOG_WRN("Unable to read charger status during boot; relying on reset reason and button GPIO");
+    }
 
     button_state btn = battery_controller.read_button_state();
     const bool button_pressed = btn.wake_2 || (earable_btn.getState() == BUTTON_PRESS);
@@ -475,7 +488,8 @@ int PowerManager::begin() {
          * - timer_reset bit set  -> manual reset (clear persisted runtime state)
          * - timer_reset bit clear -> keep persisted schedule/time (recovery reset)
          */
-        oe_boot_state.timer_reset = ((bat_state & (1 << 4)) != 0);
+        oe_boot_state.timer_reset = charger_boot_status_valid &&
+                                    ((bat_state & CHARGER_RESET_FAULT) != 0);
         oe_boot_state.manual_reset = oe_boot_state.timer_reset;
         oe_boot_state.runtime_recovery_reset = !oe_boot_state.manual_reset;
 
@@ -509,31 +523,16 @@ int PowerManager::begin() {
     battery_controller.setup(_battery_settings);
     battery_controller.set_int_callback(battery_controller_callback);
 
-    // check setup
+    /*
+     * Normal boot must not rewrite the fuel gauge's persistent data memory.
+     * Configuration remains available through `battery setup` and the explicit
+     * CONFIG_SETUP_FUEL_GAUGE firmware-update path.
+     */
     op_state state = {};
-    bool gauge_reconfigured = false;
     if (!fuel_gauge.read_operation_state(state)) {
-        LOG_WRN("Unable to read fuel gauge operation state; skipping reconfiguration");
+        LOG_WRN("Unable to read fuel gauge operation state; continuing without reconfiguration");
     } else if (state.SEC != BQ27220::SEALED) {
-        //battery_controller.setup();
-        gauge_reconfigured = fuel_gauge.setup(_battery_settings);
-        if (!gauge_reconfigured) {
-            LOG_ERR("Fuel gauge reconfiguration failed during boot");
-        }
-    }
-
-    /* Apply a different battery profile before charger work can access the gauge. */
-    if (!gauge_reconfigured) {
-        float design_capacity = 0.0f;
-        if (!fuel_gauge.read_design_cap(design_capacity)) {
-            LOG_WRN("Unable to read fuel gauge design capacity; skipping reconfiguration");
-        } else if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
-            LOG_INF("Fuel gauge design capacity %.0f mAh differs from firmware value %.0f mAh; reconfiguring",
-                    (double)design_capacity, (double)_battery_settings.capacity);
-            if (!fuel_gauge.setup(_battery_settings)) {
-                LOG_ERR("Fuel gauge design-capacity reconfiguration failed");
-            }
-        }
+        LOG_WRN("Fuel gauge is unsealed; leaving persistent configuration unchanged");
     }
 
     //k_timer_init(&charge_timer, charge_timer_handler, NULL);
@@ -686,16 +685,32 @@ bool PowerManager::check_battery() {
                 return false;
             }
 
-            if (temp < _battery_settings.temp_min || temp > _battery_settings.temp_max) {
-                // set params
+            if (temp <= _battery_settings.temp_min || temp >= _battery_settings.temp_max) {
+                charge_current_derated = true;
                 battery_controller.disable_charge();
                 return false;
-            } else if (temp < _battery_settings.temp_fast_min || temp > _battery_settings.temp_fast_max) {
-                // set params
+            }
+
+            if (charge_current_derated) {
+                const bool back_in_fast_charge_range =
+                    temp >= _battery_settings.temp_fast_min + CHARGE_TEMPERATURE_HYSTERESIS_C &&
+                    temp <= _battery_settings.temp_fast_max - CHARGE_TEMPERATURE_HYSTERESIS_C;
+                if (back_in_fast_charge_range) {
+                    charge_current_derated = false;
+                    LOG_INF("Battery temperature %.1f C returned to fast-charge range",
+                            (double)temp);
+                }
+            } else if (temp <= _battery_settings.temp_fast_min ||
+                       temp >= _battery_settings.temp_fast_max) {
+                charge_current_derated = true;
+                LOG_WRN("Battery temperature %.1f C outside fast-charge range; reducing current",
+                        (double)temp);
+            }
+
+            if (charge_current_derated) {
                 battery_controller.write_charging_control(requested_charge_current / 2.0f);
                 battery_controller.enable_charge();
             } else {
-                // normal params
                 battery_controller.write_charging_control(requested_charge_current);
                 battery_controller.enable_charge();
             }

@@ -63,6 +63,9 @@ public:
     void disable_charge();
     void enable_charge();
     
+    bool read_charging_state(uint8_t &status);
+    bool read_fault(uint8_t &status);
+    bool read_ts_fault(uint8_t &status);
     uint8_t read_charging_state();
     uint8_t read_fault();
     uint8_t read_ts_fault();
