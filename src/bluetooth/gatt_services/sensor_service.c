@@ -713,11 +713,11 @@ static void maybe_resume_active_recording(void)
 static void start_recording_sensor_suite(void)
 {
 	config_recording_sensor(ID_EXG, EXG_RECORD_SAMPLE_RATE_INDEX);
-	config_recording_sensor(ID_IMU, IMU_RECORD_SAMPLE_RATE_INDEX);
-	config_recording_sensor(ID_PPG_right_I2C2, PPG_RECORD_SAMPLE_RATE_INDEX);
-	config_recording_sensor(ID_PPG_left_I2C3, PPG_RECORD_SAMPLE_RATE_INDEX);
-	config_recording_sensor(ID_OPTTEMP_right_I2C2, TEMP_RECORD_SAMPLE_RATE_INDEX);
-	config_recording_sensor(ID_OPTTEMP_left_I2C3, TEMP_RECORD_SAMPLE_RATE_INDEX);
+	// config_recording_sensor(ID_IMU, IMU_RECORD_SAMPLE_RATE_INDEX);
+	// config_recording_sensor(ID_PPG_right_I2C2, PPG_RECORD_SAMPLE_RATE_INDEX);
+	// config_recording_sensor(ID_PPG_left_I2C3, PPG_RECORD_SAMPLE_RATE_INDEX);
+	// config_recording_sensor(ID_OPTTEMP_right_I2C2, TEMP_RECORD_SAMPLE_RATE_INDEX);
+	// config_recording_sensor(ID_OPTTEMP_left_I2C3, TEMP_RECORD_SAMPLE_RATE_INDEX);
 }
 
 static void cancel_scheduled_sensor_start(void)
