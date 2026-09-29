@@ -758,12 +758,17 @@ static void connect_evt_handler(const struct zbus_channel *chan)
 	case BT_MGMT_DISCONNECTED:
 		reset_sensor_notification_state();
 		break;
+
+	default:
+		/* Other events do not affect sensor notification state. */
+		break;
 	}
 }
 
 static void sensor_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				  uint16_t value)
 {
+	ARG_UNUSED(attr);
 	k_spinlock_key_t key = k_spin_lock(&notify_state_lock);
 
 	notify_enabled = (value == BT_GATT_CCC_NOTIFY);
@@ -777,6 +782,7 @@ static void sensor_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 static void sensor_config_status_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				  uint16_t value)
 {
+	ARG_UNUSED(attr);
 	k_spinlock_key_t key = k_spin_lock(&notify_state_lock);
 	sensor_config_status_ntfy_enabled = (value == BT_GATT_CCC_NOTIFY);
 	k_spin_unlock(&notify_state_lock, key);
@@ -855,6 +861,7 @@ static ssize_t write_config(struct bt_conn *conn,
 			 const void *buf,
 			 uint16_t len, uint16_t offset, uint8_t flags)
 {
+	ARG_UNUSED(flags);
 	LOG_DBG("Attribute write, handle: %u, conn: %p", attr->handle, (void *)conn);
 
 	if (len != sizeof(struct sensor_config)) {
@@ -867,13 +874,13 @@ static ssize_t write_config(struct bt_conn *conn,
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
 
-	struct sensor_config * config = (struct sensor_config *)buf;
+	struct sensor_config *sensor_configuration = (struct sensor_config *)buf;
 	cancel_scheduled_sensor_start();
 
-	if (config->storageOptions == 0) {
-		LOG_INF("Setup sensor ID %i (turned off)", config->sensorId);
+	if (sensor_configuration->storageOptions == 0) {
+		LOG_INF("Setup sensor ID %i (turned off)", sensor_configuration->sensorId);
 	} else {
-		LOG_INF("Setup sensor ID %i with samplerateIndex %i", config->sensorId, config->sampleRateIndex);
+		LOG_INF("Setup sensor ID %i with samplerateIndex %i", sensor_configuration->sensorId, sensor_configuration->sampleRateIndex);
 	}
 	
 	config_sensor((struct sensor_config *) buf);
@@ -1122,6 +1129,7 @@ static void notification_task(void) {
 }
 
 void sensor_queue_listener_cb(const struct zbus_channel *chan) {
+	ARG_UNUSED(chan);
 	int ret;
 	const struct sensor_msg * msg;
 
@@ -1164,19 +1172,19 @@ int init_sensor_config_status() {
 	return 0;
 }
 
-int set_sensor_config_status(struct sensor_config config) {
-	LOG_DBG("Setting sensor config status for sensorId: %i", config.sensorId);
+int set_sensor_config_status(struct sensor_config sensor_configuration) {
+	LOG_DBG("Setting sensor config status for sensorId: %i", sensor_configuration.sensorId);
 
 	ssize_t sensor_config_index = -1;
 	for (size_t i = 0; i < active_sensor_configs_size; i++) {
-		if (active_sensor_configs[i].sensorId == config.sensorId) {
+		if (active_sensor_configs[i].sensorId == sensor_configuration.sensorId) {
 			sensor_config_index = i;
 			break;
 		}
 	}
 
 	if (sensor_config_index >= 0) {
-		active_sensor_configs[sensor_config_index] = config;
+		active_sensor_configs[sensor_config_index] = sensor_configuration;
 		LOG_DBG("Found sensor config");
 	} else {
 		LOG_DBG("Sensor config not found, adding new sensor config");
@@ -1188,7 +1196,7 @@ int set_sensor_config_status(struct sensor_config config) {
 			return -1;
 		}
 		active_sensor_configs = new_active_sensor_configs;
-		active_sensor_configs[active_sensor_configs_size - 1] = config;
+		active_sensor_configs[active_sensor_configs_size - 1] = sensor_configuration;
 	}
 
 	refresh_active_recording_persistence();

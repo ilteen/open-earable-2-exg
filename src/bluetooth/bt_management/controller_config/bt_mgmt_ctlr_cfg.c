@@ -66,6 +66,7 @@ static void work_ctlr_poll_handler(struct k_work *work)
 
 static void ctlr_poll_timer_handler(struct k_timer *timer_id)
 {
+	ARG_UNUSED(timer_id);
 	int ret;
 
 	ret = k_work_submit_to_queue(&ctrl_poll_work_q, &work_ctlr_poll);

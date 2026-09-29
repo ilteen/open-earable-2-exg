@@ -115,10 +115,13 @@ static const char sensor_manager_auto_off_token[] = "SensorManager";
 static void config_work_handler(struct k_work *work);
 
 void sensor_chan_update(void *p1, void *p2, void *p3) {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
     int ret;
 
 	while (1) {
-		ret = k_poll(&sensor_manager_evt, 1, K_FOREVER);
+		(void)k_poll(&sensor_manager_evt, 1, K_FOREVER);
 
 		k_msgq_get(&sensor_queue, &msg, K_FOREVER);
 
@@ -247,6 +250,7 @@ EdgeMlSensor * get_sensor(enum sensor_id id) {
 
 // Worker-Funktion für die Sensor-Konfiguration
 static void config_work_handler(struct k_work *work) {
+	ARG_UNUSED(work);
 	int ret;
 	struct sensor_config config;
 	
@@ -257,7 +261,7 @@ static void config_work_handler(struct k_work *work) {
 
     float sampleRate = getSampleRateForSensorId(config.sensorId, config.sampleRateIndex);
 	if (sampleRate <= 0) {
-		LOG_ERR("Invalid sample rate %f for sensor %i", sampleRate, config.sensorId);
+		LOG_ERR("Invalid sample rate %f for sensor %i", (double)sampleRate, config.sensorId);
 		return;
 	}
 

@@ -34,18 +34,8 @@ bool PPGSensor::init(struct k_msgq* queue) {
         pm_device_runtime_get(ls_1_8);
         pm_device_runtime_get(ls_3_3);
 
-        const struct gpio_dt_spec LDO_EN = {
-            .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
-            .pin = 6,
-            .dt_flags = GPIO_ACTIVE_HIGH
-        };
-
-        int ret = gpio_pin_configure_dt(&LDO_EN, GPIO_OUTPUT_ACTIVE);
-        if (ret != 0) {
-            LOG_WRN("Failed to set GPOUT as input.");
-            return false;
-        }
-
+        // PPG LDO_EN is supplied by V_LS. Leave P0.6/IO4 in its reset
+        // high-impedance state to avoid back-powering V_LS through the flex.
         k_msleep(5);
 
         _active = true;
@@ -128,11 +118,11 @@ void PPGSensor::do_update_sensor() {
 void PPGSensor::start(int sample_rate_idx) {
     if (!_active) return;
 
-    t_sample_us = 1e6 / sample_rates.true_sample_rates[sample_rate_idx];
+    t_sample_us = 1000000.0f / sample_rates.true_sample_rates[sample_rate_idx];
 
     k_timeout_t t = K_USEC(t_sample_us);
 
-    _num_samples_buffered = MIN(MAX(1, (int)(CONFIG_SENSOR_LATENCY_MS * 1e3 / t_sample_us)), FIFO_SIZE / LED_NUM - 2);
+    _num_samples_buffered = MIN(MAX(1, (int) (CONFIG_SENSOR_LATENCY_MS * 1000.0f / t_sample_us)), FIFO_SIZE / LED_NUM - 2);
     
     ppg.set_interrogation_rate(sample_rates.reg_vals[sample_rate_idx]);
     ppg.set_watermark(FIFO_SIZE - _num_samples_buffered * LED_NUM);

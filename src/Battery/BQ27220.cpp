@@ -179,44 +179,44 @@ bool BQ27220::read_voltage(float &voltage) {
 
 float BQ27220::capacity() {
         uint16_t mAh = 0;
-        bool ret = readReg(registers::FCC, (uint8_t *) &mAh, sizeof(mAh));
+        (void)readReg(registers::FCC, (uint8_t *) &mAh, sizeof(mAh));
         return mAh;
 }
 
 float BQ27220::time_to_full() {
         uint16_t minutes = 0;
-        bool ret = readReg(registers::TTF, (uint8_t *) &minutes, sizeof(minutes));
+        (void)readReg(registers::TTF, (uint8_t *) &minutes, sizeof(minutes));
         return minutes;
 }
 
 
 float BQ27220::time_to_empty() {
         uint16_t minutes = 0;
-        bool ret = readReg(registers::TTE, (uint8_t *) &minutes, sizeof(minutes));
+        (void)readReg(registers::TTE, (uint8_t *) &minutes, sizeof(minutes));
         return minutes;
 }
 
 float BQ27220::state_of_charge() {
         uint16_t soc = 0;
-        bool ret = readReg(registers::SOC, (uint8_t *) &soc, sizeof(soc));
+        (void)readReg(registers::SOC, (uint8_t *) &soc, sizeof(soc));
         return soc;
 }
 
 float BQ27220::state_of_health() {
         uint16_t soc = 0;
-        bool ret = readReg(registers::SOH, (uint8_t *) &soc, sizeof(soc));
+        (void)readReg(registers::SOH, (uint8_t *) &soc, sizeof(soc));
         return soc;
 }
 
 float BQ27220::current() {
         int16_t mA = 0;
-        bool ret = readReg(registers::NAC, (uint8_t *) &mA, sizeof(mA));
+        (void)readReg(registers::NAC, (uint8_t *) &mA, sizeof(mA));
         return mA;
 }
 
 float BQ27220::average_current() {
         int16_t mA = 0;
-        bool ret = readReg(registers::AI, (uint8_t *) &mA, sizeof(mA));
+        (void)readReg(registers::AI, (uint8_t *) &mA, sizeof(mA));
         return mA;
 }
 
@@ -253,25 +253,25 @@ bool BQ27220::read_design_cap(float &capacity) {
 
 float BQ27220::remaining_cap() {
         uint16_t mAh = 0;
-        bool ret = readReg(registers::RM, (uint8_t *) &mAh, sizeof(mAh));
+        (void)readReg(registers::RM, (uint8_t *) &mAh, sizeof(mAh));
         return mAh;
 }
 
 float BQ27220::charge_current() {
         int16_t mA = 0;
-        bool ret = readReg(registers::CC, (uint8_t *) &mA, sizeof(mA));
+        (void)readReg(registers::CC, (uint8_t *) &mA, sizeof(mA));
         return mA;
 }
 
 int BQ27220::cycle_count() {
         uint16_t n_cycles = 0;
-        bool ret = readReg(registers::CYCT, (uint8_t *) &n_cycles, sizeof(n_cycles));
+        (void)readReg(registers::CYCT, (uint8_t *) &n_cycles, sizeof(n_cycles));
         return n_cycles;
 }
 
 float  BQ27220::standby_current() {
         int16_t mA = 0;
-        bool ret = readReg(registers::SI, (uint8_t *) &mA, sizeof(mA));
+        (void)readReg(registers::SI, (uint8_t *) &mA, sizeof(mA));
 
         return mA;
 }
@@ -372,11 +372,9 @@ bool BQ27220::exit_config_update(bool init) {
 }
 
 void BQ27220::read_RAM(uint16_t ram_address, uint8_t * data, int len) {
-        bool ret;
-
         writeReg(0x3E, (uint8_t *) &ram_address, sizeof(ram_address));
         k_usleep(BQ27220_RAM_TIMEOUT_US);
-        ret = readReg(0x40, data, len);
+        (void)readReg(0x40, data, len);
 }
 
 int BQ27220::write_RAM(uint16_t ram_address, uint8_t * data, int len, bool check) {
@@ -384,15 +382,13 @@ int BQ27220::write_RAM(uint16_t ram_address, uint8_t * data, int len, bool check
         uint8_t data_len=0;
         uint8_t buf[len];
 
-        bool ret;
-
         writeReg(0x3E, (uint8_t *) &ram_address, sizeof(ram_address));
 
         k_usleep(BQ27220_RAM_TIMEOUT_US);
 
-        ret = readReg(0x61, (uint8_t *) &data_len, sizeof(data_len));
-        ret = readReg(0x40, buf, len);
-        ret = readReg(0x60, (uint8_t *) &check_sum, sizeof(check_sum));
+        (void)readReg(0x61, (uint8_t *) &data_len, sizeof(data_len));
+        (void)readReg(0x40, buf, len);
+        (void)readReg(0x60, (uint8_t *) &check_sum, sizeof(check_sum));
 
         uint8_t my_check = (uint8_t)0xFF-check_sum; // - data[0] - data[1];
 
