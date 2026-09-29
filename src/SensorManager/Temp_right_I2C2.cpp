@@ -6,7 +6,7 @@ LOG_MODULE_DECLARE(MLX90632);
 
 // Static configuration for temperature right sensor
 const TempSensorConfig Temp_right_I2C2::temp_config = {
-    .i2c_dev = &I2C2,
+    .i2c_dev = &I2C3,
     .i2c_addr = DT_REG_ADDR(DT_NODELABEL(mlx90632_right)),
     .sensor_id = ID_OPTTEMP_right_I2C2,
     .name = "right"

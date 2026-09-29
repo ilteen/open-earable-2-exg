@@ -141,12 +141,12 @@
 	 zephyr,concat-buf-size = <512>;
      zephyr,flash-buf-max-size = <512>;
 
-	maxm86161_right: maxm86161@62 {
+	 maxm86161_left: maxm86161@62 {
         compatible = "i2c-device";
         reg = <0x62>;
     };
 
-	mlx90632_right: mlx90632@3a {
+	 mlx90632_left: mlx90632@3a {
         compatible = "i2c-device";
         reg = <0x3a>;
     };
@@ -177,12 +177,12 @@
         reg = <0x68>;
     };
 
-	maxm86161_left: maxm86161@62 {
+	maxm86161_right: maxm86161@62 {
         compatible = "i2c-device";
         reg = <0x62>;
     };
 
-	mlx90632_left: mlx90632@3a {
+	mlx90632_right: mlx90632@3a {
         compatible = "i2c-device";
         reg = <0x3a>;
     };

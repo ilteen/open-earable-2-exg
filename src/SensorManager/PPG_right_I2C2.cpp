@@ -6,7 +6,7 @@ LOG_MODULE_DECLARE(MAXM86161);
 
 // Static configuration for PPG right sensor
 const PPGSensorConfig PPG_right_I2C2::ppg_config = {
-    .i2c_dev = &I2C2,
+    .i2c_dev = &I2C3,
     .i2c_addr = DT_REG_ADDR(DT_NODELABEL(maxm86161_right)),
     .sensor_id = ID_PPG_right_I2C2,
     .name = "right"

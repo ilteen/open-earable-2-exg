@@ -129,10 +129,10 @@ bool AFE1594::configureAveragedChannels(ChannelGain gain)
     const uint32_t channel_1 =
         (static_cast<uint32_t>(gain) << 8) |
         (static_cast<uint32_t>(ChannelInput::E1) << 4) |
-        static_cast<uint32_t>(ChannelInput::E2);
+        static_cast<uint32_t>(ChannelInput::E3);
     const uint32_t channel_2 =
         (static_cast<uint32_t>(gain) << 8) |
-        (static_cast<uint32_t>(ChannelInput::E3) << 4) |
+        (static_cast<uint32_t>(ChannelInput::E2) << 4) |
         static_cast<uint32_t>(ChannelInput::E4);
     const uint32_t channel_enable = bit::ENABLE_ECG_CH1 | bit::ENABLE_ECG_CH2;
 
@@ -159,7 +159,7 @@ bool AFE1594::configureAveragedChannels(ChannelGain gain)
         return false;
     }
 
-    LOG_INF("ECG average enabled: CH1=E1-E2, CH2=E3-E4, gain %.2f; CH2 FIFO word masked",
+    LOG_INF("ECG average enabled: CH1=E1-E3, CH2=E2-E4, gain %.2f; CH2 FIFO word masked",
             (double)gainValue(gain));
     return true;
 }

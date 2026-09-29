@@ -193,7 +193,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "Pulse Oximeter Right I2C2",
+        .name = "Pulse Oximeter Right I2C3",
         .id = ID_PPG_right_I2C2,
         .groupCount = PPG_RIGHT_GROUP_COUNT,
         .groups = ppgRightGroups,
@@ -208,7 +208,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "Pulse Oximeter Left I2C3",
+        .name = "Pulse Oximeter Left I2C2",
         .id = ID_PPG_left_I2C3,
         .groupCount = PPG_LEFT_GROUP_COUNT,
         .groups = ppgLeftGroups,
@@ -223,7 +223,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "Skin Temperature Sensor Right I2C2",
+        .name = "Skin Temperature Sensor Right I2C3",
         .id = ID_OPTTEMP_right_I2C2,
         .groupCount = OPTIC_TEMP_RIGHT_GROUP_COUNT,
         .groups = opticTemperatureRightGroups,
@@ -238,7 +238,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "Skin Temperature Sensor Left I2C3",
+        .name = "Skin Temperature Sensor Left I2C2",
         .id = ID_OPTTEMP_left_I2C3,
         .groupCount = OPTIC_TEMP_LEFT_GROUP_COUNT,
         .groups = opticTemperatureLeftGroups,

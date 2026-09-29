@@ -109,7 +109,7 @@ bool ExG::init(struct k_msgq *queue)
     }
 
     _active = true;
-    LOG_INF("AFE1594 averaged E1-E2/E3-E4, gain %.2f, bias=%s, FIFO poll=%u ms",
+    LOG_INF("AFE1594 averaged E1-E3/E2-E4, gain %.2f, bias=%s, FIFO poll=%u ms",
             (double)AFE1594::gainValue(EXG_CHANNEL_GAIN),
             biasModeName(),
             FIFO_POLL_INTERVAL_MS);

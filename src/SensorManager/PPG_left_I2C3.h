@@ -4,7 +4,7 @@
 #include "PPGSensor.h"
 
 /**
- * @brief PPG sensor on I2C3 (left ear)
+ * @brief PPG sensor for the left ear (wired to I2C2)
  * 
  * This is a thin wrapper around PPGSensor that provides
  * the static instance and configuration for the left PPG sensor.

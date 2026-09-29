@@ -4,7 +4,7 @@
 #include "TempSensor.h"
 
 /**
- * @brief Temperature sensor on I2C3 (left ear)
+ * @brief Temperature sensor for the left ear (wired to I2C2)
  * 
  * This is a thin wrapper around TempSensor that provides
  * the static instance and configuration for the left temperature sensor.

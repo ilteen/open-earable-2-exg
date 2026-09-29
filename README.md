@@ -201,11 +201,13 @@ This firmware extends OpenEarable 2 with ExG-focused recording features:
 - Automatic recovery of scheduled and active recordings after runtime resets
 - Scheduled recordings currently start only ExG at 250 Hz (AFE1594).
 
-The AFE1594 extension averages channel 1 (E1-E2) and channel 2 (E3-E4) in
-hardware and stores only one copy of the averaged result. Set `EXG_BIAS_MODE`
+The right earpiece (I2C1) connects E1 and E2; the left earpiece (I2C2)
+connects E3 and E4. The AFE1594 therefore measures channel 1 as E1-E3 and
+channel 2 as E2-E4, averages those two duplicate measurements in hardware,
+and stores only one copy of the averaged result. Set `EXG_BIAS_MODE`
 near the top of `src/SensorManager/ExG.cpp` to `PassiveTwoElectrode`,
-`DedicatedRld`, or `SharedE2Rld`. Shared-E2 mode uses the E2/E4 electrode as
-both the negative measurement reference and RLD electrode. Passive mode uses
+`DedicatedRld`, or `SharedE2Rld`. Shared-E2 mode uses the right E1/E2 electrode
+as both a measurement electrode and the RLD electrode. Passive mode uses
 the AFE's internal 7.5 MOhm resistors to bias E1 high and E2 low. Its SPI connections
 are SCK=IO4/P0.06, MOSI=IO5/P0.13, MISO=IO6/P0.12, and CS=IO1/P0.25. GPIO1
 (DRDY) is not connected; firmware polls the AFE FIFO every 4 ms. The AFE uses
