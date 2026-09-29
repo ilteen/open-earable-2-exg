@@ -111,7 +111,7 @@ struct __packed scheduled_sensor_start_cfg {
 #define SCHEDULED_START_MAX_LEAD_TIME_US (365ULL * 24ULL * 60ULL * 60ULL * 1000000ULL)
 
 // Fixed recording rates used only by the scheduled recording suite.
-#define EXG_RECORD_SAMPLE_RATE_INDEX 5U  // ExG = 256 Hz
+#define EXG_RECORD_SAMPLE_RATE_INDEX 2U  // AFE1594 ExG = 250 Hz
 #define IMU_RECORD_SAMPLE_RATE_INDEX 3U  // IMU = 200 Hz
 #define PPG_RECORD_SAMPLE_RATE_INDEX 4U  // PPG (left/right) = 200 Hz
 #define TEMP_RECORD_SAMPLE_RATE_INDEX 4U // Temp (left/right) = 8 Hz

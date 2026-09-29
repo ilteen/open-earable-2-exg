@@ -14,13 +14,13 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 
-BLE_ADDRESS = "E846C7ED-E084-6CAC-814C-23EA65F1B224"
+BLE_ADDRESS = "BCA064CB-3D04-5D7E-B311-4B0E2F094682"
 SENSOR_CONFIG_CHAR_UUID = "34c2e3be-34aa-11eb-adc1-0242ac120002"
 SENSOR_DATA_CHAR_UUID = "34c2e3bc-34aa-11eb-adc1-0242ac120002"
 SENSOR_ID_EXG = 9
 DATA_STREAMING = 0x01
-EXG_SAMPLE_RATE_INDEX = 5  # 256 Hz in current firmware mapping (src/SensorManager/ExG.cpp)
-EXG_SAMPLE_RATE_HZ = 256
+EXG_SAMPLE_RATE_INDEX = 0  # 50 Hz output (250 Hz AFE, averaged by 5)
+EXG_SAMPLE_RATE_HZ = 50
 
 SENSOR_CONFIG_FORMAT = "<BBB"
 SENSOR_PACKET_HEADER_FORMAT = "<BBQ"
@@ -34,14 +34,14 @@ dataList = deque(maxlen=500)
 max_datapoints_to_display = 500    # * 2 # Werte auf der x Achse
 min_buffer_uV = 400                 # Skala der y Achse
 sample_rate = EXG_SAMPLE_RATE_HZ
-filters = digitalfilter.get_Biopotential_filter(order=4, cutoff=[1, 30], btype="bandpass", fs=sample_rate, output="sos")
+filters = digitalfilter.get_Biopotential_filter(order=4, cutoff=[0.1, 40], btype="bandpass", fs=sample_rate, output="sos")
 #filters = digitalfilter.get_Biopotential_filter(order=4, cutoff=[1, 35], btype="bandpass", fs=256, output="sos") #EMG
 #filters = digitalfilter.get_Biopotential_filter(order=4, cutoff= [1, 40], btype="bandpass", fs=256, output="sos") #ECG
 #filters = digitalfilter.get_Biopotential_filter(order=4, cutoff=[1, 20], btype="bandpass", fs=256, output="sos") #ECG
 #filters = digitalfilter.get_Biopotential_filter(order=4, cutoff=[5, 25], btype="bandpass", fs=256, output="sos") #ECG
-enable_filters = True
+enable_filters = False
 write_to_file = False
-autoscale = False
+autoscale = True
 
 current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 filename = f"ecg_lear_lfinger_{current_time}.csv"
@@ -302,8 +302,14 @@ def handle_close(evt):
     cleanup()
 
 def handle_key_press(event):
+    global enable_filters
     if event.key == 'g' and not is_shutting_down:
         insert_datapoint()
+    elif event.key == 'f' and not is_shutting_down:
+        enable_filters = not enable_filters
+        mode = "filtered" if enable_filters else "raw"
+        ax.set_title(f"Biopotential Data from OpenEarable ExG ({mode})")
+        print(f"Plot mode: {mode}")
 
 
 if __name__ == "__main__":

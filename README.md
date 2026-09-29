@@ -199,10 +199,26 @@ This firmware extends OpenEarable 2 with ExG-focused recording features:
 - Scheduled recordings with a dedicated desktop app
 - USB time sync for reliable scheduled starts
 - Automatic recovery of scheduled and active recordings after runtime resets
-- Scheduled recordings currently start with:
-  - ExG: 256 Hz
-  - IMU: 200 Hz
-  - PPG left/right: 200 Hz
-  - Temperature left/right: 8 Hz
+- Scheduled recordings currently start only ExG at 250 Hz (AFE1594).
+
+The AFE1594 extension averages channel 1 (E1-E2) and channel 2 (E3-E4) in
+hardware and stores only one copy of the averaged result. Set `EXG_BIAS_MODE`
+near the top of `src/SensorManager/ExG.cpp` to `PassiveTwoElectrode`,
+`DedicatedRld`, or `SharedE2Rld`. Shared-E2 mode uses the E2/E4 electrode as
+both the negative measurement reference and RLD electrode. Passive mode uses
+the AFE's internal 7.5 MOhm resistors to bias E1 high and E2 low. Its SPI connections
+are SCK=IO4/P0.06, MOSI=IO5/P0.13, MISO=IO6/P0.12, and CS=IO1/P0.25. GPIO1
+(DRDY) is not connected; firmware polls the AFE FIFO every 4 ms. The AFE uses
+software SPI because SPIM0 and UART0 are modes of the same nRF5340 peripheral.
+The ExG gain is selected by `EXG_CHANNEL_GAIN` near the top of
+`src/SensorManager/ExG.cpp` and is currently set to 9 for the AFE's lowest
+input-referred EEG noise. Its specified common-mode and differential ranges
+include the 1.65 V two-electrode bias point and expected dry-electrode offset.
+BLE streaming defaults to 50 Hz (AFE sampling at 250 Hz with 5-sample averaging),
+with 125, 250, 500, 1000, 2000, and 4000 Hz also selectable;
+scheduled SD recordings remain at 250 Hz.
+
+UART0 uses IO2/P1.04 (TX) and IO3/P0.20 (RX), including the J-Link Virtual COM
+port, without sharing pins with the AFE1594.
 
 Please go to [the forked OpenEarable 2 firmware](https://github.com/OpenEarable/open-earable-2) for setup and usage details.

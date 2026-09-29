@@ -290,9 +290,9 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         .configOptions = {
             .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
             .frequencyOptions = {
-                .frequencyCount = sizeof(ExG::sample_rates.reg_vals),
+                .frequencyCount = ARRAY_SIZE(ExG::sample_rates.reg_vals),
                 .defaultFrequencyIndex = 0,
-                .maxBleFrequencyIndex = 7,
+                .maxBleFrequencyIndex = ARRAY_SIZE(ExG::sample_rates.reg_vals) - 1,
                 .frequencies = ExG::sample_rates.sample_rates,
             },
         },

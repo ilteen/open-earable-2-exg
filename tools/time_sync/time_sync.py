@@ -105,8 +105,8 @@ BLE_CONNECT_RETRY_DELAY_S = 2.0
 APP_LAUNCH_UNIX_TS = int(time.time())
 DEFAULT_PARTICIPANT_ID = f"P{APP_LAUNCH_UNIX_TS % 10000:04d}"
 # ExG sample-rate index mapping is defined in src/SensorManager/ExG.cpp.
-# Current mapping uses index 5 for 256 Hz.
-EXG_SAMPLERATE_INDEX_256HZ = 5
+# AFE1594 mapping uses index 0 for 250 Hz.
+EXG_SAMPLERATE_INDEX_250HZ = 0
 
 SENSOR_SERVICE_UUID = "34c2e3bb-34aa-11eb-adc1-0242ac120002"
 SENSOR_CONFIG_CHAR_UUID = "34c2e3be-34aa-11eb-adc1-0242ac120002"
@@ -380,7 +380,7 @@ async def sync_time_and_schedule_exg_recording(
     device: BLEDevice | str,
     participant_id: str,
     scheduled_start_us: int,
-    sample_rate_index: int = EXG_SAMPLERATE_INDEX_256HZ,
+    sample_rate_index: int = EXG_SAMPLERATE_INDEX_250HZ,
     device_display_name: Optional[str] = None,
     progress_callback=None,
 ) -> tuple[bool, str]:
@@ -804,7 +804,7 @@ def sync_time_and_schedule_exg_recording_usb(
     port: str,
     participant_id: str,
     scheduled_start_us: int,
-    sample_rate_index: int = EXG_SAMPLERATE_INDEX_256HZ,
+    sample_rate_index: int = EXG_SAMPLERATE_INDEX_250HZ,
     progress_callback=None,
     debug_callback=None,
 ) -> tuple[bool, str]:
@@ -1879,7 +1879,7 @@ class ExGLivePlotTab(QWidget):
         self.stream_thread: Optional[threading.Thread] = None
         self.is_closing = False
         self.display_max_samples = 500
-        self.stream_sample_rate_hz = 256.0
+        self.stream_sample_rate_hz = 250.0
         self.min_buffer_uv = 400.0
         self.autoscale = False
         self.enable_filters = True
@@ -2128,7 +2128,7 @@ class ExGLivePlotTab(QWidget):
                 self.status_update.emit("Connected. Enabling ExG streaming...")
                 # Keep ExG live stream behavior aligned with record_and_realtime_plot_BLE.py.
                 stream_cfg = build_sensor_config(
-                    SENSOR_ID_EXG, EXG_SAMPLERATE_INDEX_256HZ, DATA_STREAMING
+                    SENSOR_ID_EXG, EXG_SAMPLERATE_INDEX_250HZ, DATA_STREAMING
                 )
                 await client.write_gatt_char(SENSOR_CONFIG_CHAR_UUID, stream_cfg)
 
