@@ -83,6 +83,10 @@ void Button::end() {
 	//gpio_remove_callback();
 }
 
+int Button::set_wakeup_int() {
+    return gpio_pin_interrupt_configure_dt(&button, GPIO_INT_LEVEL_ACTIVE);
+}
+
 void Button::button_work_handler(struct k_work * work) {
 	Button *btn = CONTAINER_OF(work, Button, button_work);
 

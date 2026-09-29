@@ -18,6 +18,7 @@ public:
 
     void begin();
     void end();
+    int set_wakeup_int();
 
     button_action getState() const;
 private:

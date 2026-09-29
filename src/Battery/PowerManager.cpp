@@ -39,6 +39,7 @@ LOG_MODULE_REGISTER(power_manager, LOG_LEVEL_DBG);
 
 static constexpr float RECORDING_CHARGE_HEADROOM_MA = 150.0f;
 static constexpr float CHARGE_TEMPERATURE_HYSTERESIS_C = 2.0f;
+static constexpr int64_t POWER_BUTTON_HOLD_MS = 2000;
 
 static constexpr uint8_t CHARGER_STATE_MASK = BIT(7) | BIT(6);
 static constexpr uint8_t CHARGER_RESET_FAULT = BIT(4);
@@ -135,6 +136,8 @@ static void log_charging_metrics(void)
 K_WORK_DELAYABLE_DEFINE(PowerManager::charge_ctrl_delayable, PowerManager::charge_ctrl_work_handler);
 
 K_WORK_DELAYABLE_DEFINE(PowerManager::power_down_work, PowerManager::power_down_work_handler);
+K_WORK_DELAYABLE_DEFINE(PowerManager::button_power_off_work,
+                        PowerManager::button_power_off_work_handler);
 
 //K_WORK_DEFINE(PowerManager::power_down_work, PowerManager::power_down_work_handler);
 //K_WORK_DEFINE(PowerManager::charge_ctrl_work, PowerManager::charge_ctrl_work_handler);
@@ -177,6 +180,21 @@ static void log_reset_reason(uint32_t reset_reas)
 #ifdef RESET_RESETREAS_CTRLAP_Msk
     if (reset_reas & RESET_RESETREAS_CTRLAP_Msk) {
         LOG_INF("Reset reason: debug interface");
+    }
+#endif
+#ifdef RESET_RESETREAS_OFF_Msk
+    if (reset_reas & RESET_RESETREAS_OFF_Msk) {
+        LOG_INF("Reset reason: GPIO wake from System OFF");
+    }
+#endif
+#ifdef RESET_RESETREAS_DIF_Msk
+    if (reset_reas & RESET_RESETREAS_DIF_Msk) {
+        LOG_INF("Reset reason: debugger wake from System OFF");
+    }
+#endif
+#ifdef RESET_RESETREAS_VBUS_Msk
+    if (reset_reas & RESET_RESETREAS_VBUS_Msk) {
+        LOG_INF("Reset reason: VBUS wake from System OFF");
     }
 #endif
 }
@@ -241,6 +259,18 @@ void PowerManager::power_down_work_handler(struct k_work * work) {
 	power_manager.power_down();
 }
 
+void PowerManager::button_power_off_work_handler(struct k_work * work) {
+    ARG_UNUSED(work);
+
+    if (!power_manager.power_on || earable_btn.getState() != BUTTON_PRESS) {
+        return;
+    }
+
+    power_manager.power_on = false;
+    sensor_service_prepare_manual_power_off();
+    power_manager.power_down();
+}
+
 void PowerManager::charge_ctrl_work_handler(struct k_work * work) {
 	ARG_UNUSED(work);
 	power_manager.charge_task();
@@ -260,12 +290,11 @@ void PowerManager::battery_controller_work_handler(struct k_work * work) {
     battery_controller.enter_high_impedance();
 
     if (state.wake_2) {
-        power_manager.power_on = !power_manager.power_on;
-        //LOG_INF("Power on: %i", power_manager.power_on);
-
-        if (!power_manager.power_on) {
-            sensor_service_prepare_manual_power_off();
-            power_manager.power_down();
+        if (power_manager.power_on) {
+            k_work_reschedule(&power_manager.button_power_off_work,
+                              K_MSEC(POWER_BUTTON_HOLD_MS));
+        } else {
+            power_manager.power_on = true;
         }
     }
 
@@ -461,6 +490,7 @@ void PowerManager::fuel_gauge_work_handler(struct k_work * work) {
 
 int PowerManager::begin() {
     earable_state oe_state{};
+    const uint32_t reset_reas = NRF_RESET->RESETREAS;
 
     oe_state.charging_state = DISCHARGING;
     oe_state.pairing_state = PAIRED;
@@ -485,7 +515,6 @@ int PowerManager::begin() {
     power_on = button_pressed;
 
     // get reset reason
-    uint32_t reset_reas = NRF_RESET->RESETREAS;
     log_reset_reason(reset_reas);
     bool intentional_power_off_reset = consume_intentional_power_off() &&
                                        (reset_reas & RESET_RESETREAS_SREQ_Msk);
@@ -536,7 +565,6 @@ int PowerManager::begin() {
     }*/
 
     battery_controller.setup(_battery_settings);
-    battery_controller.set_int_callback(battery_controller_callback);
 
     /*
      * Normal boot must not rewrite the fuel gauge's persistent data memory.
@@ -558,6 +586,22 @@ int PowerManager::begin() {
 
     // check charging state
     bool charging = battery_controller.power_connected();
+
+    /*
+     * A GPIO wake from System OFF starts the CPU immediately. Do not show
+     * the normal paired-state LED, or accept a short press as a power-on,
+     * until the physical button has been held for the full startup interval.
+     */
+    if (!charging && power_on) {
+        const int64_t hold_deadline = k_uptime_get() + POWER_BUTTON_HOLD_MS;
+        while (k_uptime_get() < hold_deadline) {
+            if (earable_btn.getState() != BUTTON_PRESS) {
+                power_on = false;
+                break;
+            }
+            k_msleep(20);
+        }
+    }
 
     if (!battery_condition) {
         power_on = false;
@@ -603,6 +647,8 @@ int PowerManager::begin() {
                 charging, oe_boot_state.manual_reset, oe_boot_state.timer_reset);
         return power_down();
     }
+
+    battery_controller.set_int_callback(battery_controller_callback);
 
     //TODO: check power on condition
     // either not charging and edv1 or charging and edv0 and temperature
@@ -851,6 +897,9 @@ int PowerManager::power_down(bool fault) {
         fuel_gauge_shutdown_confirmed(_battery_settings);
 
     if (!charging) {
+        ret = earable_btn.set_wakeup_int();
+        if (ret != 0) return ret;
+
         ret = battery_controller.set_wakeup_int();
         if (ret != 0) return ret;
 

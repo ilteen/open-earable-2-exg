@@ -33,6 +33,7 @@ public:
     void set_error_led(int val = 1);
 
     static k_work_delayable power_down_work;
+    static k_work_delayable button_power_off_work;
 private:
     bool power_on = false;
     bool charging_disabled = false;
@@ -57,6 +58,7 @@ private:
 
     static void charge_ctrl_work_handler(struct k_work * work);
     static void power_down_work_handler(struct k_work * work);
+    static void button_power_off_work_handler(struct k_work * work);
     static void fuel_gauge_work_handler(struct k_work * work);
     static void battery_controller_work_handler(struct k_work * work);
 
