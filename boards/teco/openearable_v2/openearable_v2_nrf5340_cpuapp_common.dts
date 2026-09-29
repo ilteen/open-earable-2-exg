@@ -158,7 +158,7 @@
 	 pinctrl-0 = <&i2c3_default>;
 	 pinctrl-1 = <&i2c3_sleep>;
 	 pinctrl-names = "default", "sleep";
-	 clock-frequency = <I2C_BITRATE_FAST_PLUS>;  // 1000 kHz
+	 clock-frequency = <I2C_BITRATE_FAST>;  // 400 kHz; reliable for MLX90632 and shared sensors
 	 zephyr,concat-buf-size = <512>;
      zephyr,flash-buf-max-size = <512>;
 
