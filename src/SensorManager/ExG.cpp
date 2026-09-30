@@ -11,49 +11,39 @@
 LOG_MODULE_REGISTER(ExG, LOG_LEVEL_INF);
 
 namespace {
-constexpr gpio_pin_t PIN_AFE_CS = 25;  // Extension IO1 / P0.25
-constexpr gpio_pin_t PIN_AFE_SCK = 6;  // Extension IO4 / P0.06
-constexpr gpio_pin_t PIN_AFE_MOSI = 13; // Extension IO5 / P0.13
-constexpr gpio_pin_t PIN_AFE_MISO = 12; // Extension IO6 / P0.12
+constexpr gpio_pin_t PIN_AFE_CS = 25;
+constexpr gpio_pin_t PIN_AFE_SCK = 6;
+constexpr gpio_pin_t PIN_AFE_MOSI = 13;
+constexpr gpio_pin_t PIN_AFE_MISO = 12;
 constexpr uint32_t FIFO_POLL_INTERVAL_MS = 4;
-
-/* Change only this line to select the complete patient-bias configuration. */
 constexpr AFE1594::PatientBiasMode EXG_BIAS_MODE =
-    AFE1594::PatientBiasMode::SharedE2Rld;
-
-const char *biasModeName()
-{
-    switch (EXG_BIAS_MODE) {
-    case AFE1594::PatientBiasMode::PassiveTwoElectrode: return "passive";
-    case AFE1594::PatientBiasMode::DedicatedRld: return "dedicated RLD";
-    case AFE1594::PatientBiasMode::SharedE2Rld: return "shared E2 RLD";
-    }
-    return "unknown";
-}
-
-/*
- * Change this value to select the AFE1594 channel gain. Available values are
- * Gain1p25, Gain2, Gain3, Gain4, Gain5, Gain6p5, and Gain9. Gain9 gives the
- * AFE's lowest input-referred noise for EEG while its +/-220 mV differential
- * range and common-mode range still cover the passive two-electrode bias.
- */
+    AFE1594::PatientBiasMode::DedicatedRld;
 constexpr AFE1594::ChannelGain EXG_CHANNEL_GAIN = AFE1594::ChannelGain::Gain9;
-
-/* AFE ADC LSB at AVDD=3.3 V, from datasheet section 9.3.6. */
 constexpr float ADC_LSB_MICROVOLTS = 0.3365f;
-constexpr size_t MAX_SAMPLES_PER_DRAIN = 16;
+constexpr size_t MAX_FRAMES_PER_DRAIN = 4;
+constexpr uint8_t OUTPUT_DECIMATION[] = {5, 1, 1, 1, 1, 1, 1};
 
 atomic_t sample_count;
-float last_sample_microvolts;
-int32_t minimum_raw_sample;
-int32_t maximum_raw_sample;
+float last_sample_microvolts[AFE1594::ECG_CHANNEL_COUNT];
+int32_t minimum_raw_sample[AFE1594::ECG_CHANNEL_COUNT];
+int32_t maximum_raw_sample[AFE1594::ECG_CHANNEL_COUNT];
 } // namespace
 
-ExG ExG::sensor;
+ExG ExG::sensor(0, ID_EXG, "Eartips");
+ExG ExG::sensor_3_4(1, ID_EXG_3_4, "3_4");
+ExG ExG::sensor_5_6(2, ID_EXG_5_6, "5_6");
+ExG ExG::sensor_7_8(3, ID_EXG_7_8, "7_8");
+ExG *ExG::channels[AFE1594::ECG_CHANNEL_COUNT] = {
+    &sensor, &sensor_3_4, &sensor_5_6, &sensor_7_8,
+};
+
 AFE1594 ExG::afe;
 struct k_timer ExG::poll_timer;
-
-static struct sensor_msg msg_exg;
+struct k_work ExG::poll_work;
+bool ExG::hardware_active = false;
+uint8_t ExG::active_channel_count = 0;
+int ExG::current_sample_rate_index = -1;
+uint32_t ExG::hardware_sample_period_us = 4000U;
 
 /* The AFE minimum is 125 SPS; 50 Hz is produced by decimating 250 SPS by 5. */
 const SampleRateSetting<7> ExG::sample_rates = {
@@ -62,12 +52,16 @@ const SampleRateSetting<7> ExG::sample_rates = {
     {50.0f, 125.0f, 250.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f},
 };
 
-constexpr uint8_t OUTPUT_DECIMATION[] = {5, 1, 1, 1, 1, 1, 1};
+ExG::ExG(uint8_t channel_index, uint8_t sensor_id, const char *name)
+    : channel_index(channel_index), sensor_id(sensor_id), name(name)
+{
+}
 
 bool ExG::init(struct k_msgq *queue)
 {
-    if (_active) {
-        sensor_queue = queue;
+    sensor_queue = queue;
+    if (hardware_active) {
+        _active = true;
         return true;
     }
 
@@ -83,12 +77,9 @@ bool ExG::init(struct k_msgq *queue)
         return false;
     }
 
-    /* AFE1594 datasheet table 10-2 requires 100 ms after its rails ramp. */
     k_msleep(100);
-
-    k_work_init(&sensor.sensor_work, update_sensor);
+    k_work_init(&poll_work, update_sensor);
     k_timer_init(&poll_timer, poll_timer_handler, nullptr);
-    sensor_queue = queue;
 
     const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     const AFE1594::BusPins pins = {
@@ -101,27 +92,60 @@ bool ExG::init(struct k_msgq *queue)
 
     if (!afe.begin(0, pins) ||
         !afe.configurePatientBias(EXG_BIAS_MODE) ||
-        !afe.configureAveragedChannels(EXG_CHANNEL_GAIN)) {
+        !afe.configureDifferentialChannels(EXG_CHANNEL_GAIN)) {
         LOG_ERR("AFE1594 initialization failed");
         pm_device_runtime_put(ls_1_8);
         pm_device_runtime_put(ls_3_3);
         return false;
     }
 
+    hardware_active = true;
     _active = true;
-    LOG_INF("AFE1594 averaged E1-E3/E2-E4, gain %.2f, bias=%s, FIFO poll=%u ms",
-            (double)AFE1594::gainValue(EXG_CHANNEL_GAIN),
-            biasModeName(),
-            FIFO_POLL_INTERVAL_MS);
+    LOG_INF("AFE1594 differential channels ready, dedicated RLD, gain %.2f",
+            (double)AFE1594::gainValue(EXG_CHANNEL_GAIN));
     return true;
 }
 
 void ExG::poll_timer_handler(struct k_timer *timer)
 {
     ARG_UNUSED(timer);
+    if (active_channel_count > 0U) {
+        k_work_submit_to_queue(&sensor_work_q, &poll_work);
+    }
+}
 
-    if (sensor._running) {
-        k_work_submit_to_queue(&sensor_work_q, &sensor.sensor_work);
+void ExG::publish_sample(int32_t raw_sample, uint64_t timestamp)
+{
+    const float microvolts =
+        (raw_sample * ADC_LSB_MICROVOLTS) / AFE1594::gainValue(EXG_CHANNEL_GAIN);
+    if (raw_sample < minimum_raw_sample[channel_index]) {
+        minimum_raw_sample[channel_index] = raw_sample;
+    }
+    if (raw_sample > maximum_raw_sample[channel_index]) {
+        maximum_raw_sample[channel_index] = raw_sample;
+    }
+
+    decimation_sum += microvolts;
+    if (++decimation_phase < output_decimation) {
+        return;
+    }
+
+    const float output_microvolts = decimation_sum / output_decimation;
+    decimation_phase = 0;
+    decimation_sum = 0.0f;
+    last_sample_microvolts[channel_index] = output_microvolts;
+    atomic_inc(&sample_count);
+
+    struct sensor_msg message = {};
+    message.sd = _sd_logging;
+    message.stream = _ble_stream;
+    message.data.id = sensor_id;
+    message.data.size = sizeof(output_microvolts);
+    message.data.time = timestamp;
+    memcpy(message.data.data, &output_microvolts, sizeof(output_microvolts));
+
+    if (k_msgq_put(sensor_queue, &message, K_NO_WAIT) != 0) {
+        LOG_WRN("sensor msg queue full (%s)", name);
     }
 }
 
@@ -129,111 +153,94 @@ void ExG::update_sensor(struct k_work *work)
 {
     ARG_UNUSED(work);
 
-    if (!sensor._running) {
-        return;
-    }
-
-    int32_t samples[MAX_SAMPLES_PER_DRAIN];
+    int32_t frames[MAX_FRAMES_PER_DRAIN][AFE1594::ECG_CHANNEL_COUNT];
     bool overflow = false;
-    size_t count;
+    size_t frame_count;
 
     do {
-        count = afe.readSamples(samples, ARRAY_SIZE(samples), &overflow);
+        frame_count = afe.readSampleFrames(frames, ARRAY_SIZE(frames), &overflow);
         if (overflow) {
             LOG_WRN("AFE1594 Main FIFO overflow");
         }
-        if (count == 0U) {
+        if (frame_count == 0U) {
             break;
         }
 
         const uint64_t now = micros();
-        for (size_t i = 0; i < count; ++i) {
-            const float microvolts =
-                (samples[i] * ADC_LSB_MICROVOLTS) /
-                AFE1594::gainValue(EXG_CHANNEL_GAIN);
-            if (samples[i] < minimum_raw_sample) {
-                minimum_raw_sample = samples[i];
-            }
-            if (samples[i] > maximum_raw_sample) {
-                maximum_raw_sample = samples[i];
-            }
-            sensor.decimation_sum += microvolts;
-            if (++sensor.decimation_phase < sensor.output_decimation) {
-                continue;
-            }
-            const float output_microvolts =
-                sensor.decimation_sum / sensor.output_decimation;
-            sensor.decimation_phase = 0;
-            sensor.decimation_sum = 0.0f;
-            last_sample_microvolts = output_microvolts;
-            const atomic_val_t count_after_sample = atomic_inc(&sample_count) + 1;
-            if (count_after_sample == 1) {
-                LOG_INF("First AFE1594 output: %.3f uV",
-                        (double)output_microvolts);
-            }
-
-            msg_exg.sd = sensor._sd_logging;
-            msg_exg.stream = sensor._ble_stream;
-            msg_exg.data.id = ID_EXG;
-            msg_exg.data.size = sizeof(float);
-            msg_exg.data.time = now - ((count - 1U - i) * sensor.sample_period_us);
-            memcpy(msg_exg.data.data, &output_microvolts, sizeof(output_microvolts));
-
-            if (k_msgq_put(sensor_queue, &msg_exg, K_NO_WAIT) != 0) {
-                LOG_WRN("sensor msg queue full");
-                return;
+        for (size_t frame = 0; frame < frame_count; ++frame) {
+            const uint64_t timestamp =
+                now - ((frame_count - 1U - frame) * hardware_sample_period_us);
+            for (size_t channel = 0; channel < AFE1594::ECG_CHANNEL_COUNT; ++channel) {
+                if (channels[channel]->_running) {
+                    channels[channel]->publish_sample(frames[frame][channel], timestamp);
+                }
             }
         }
-    } while (sensor._running && count == ARRAY_SIZE(samples));
+    } while (active_channel_count > 0U && frame_count == ARRAY_SIZE(frames));
 }
 
 void ExG::start(int sample_rate_idx)
 {
-    if (!_active || sample_rate_idx < 0 ||
+    if (!_active || _running || sample_rate_idx < 0 ||
         sample_rate_idx >= static_cast<int>(ARRAY_SIZE(sample_rates.reg_vals))) {
         return;
     }
-
-    const uint8_t rate_selector = sample_rates.reg_vals[sample_rate_idx];
-    atomic_set(&sample_count, 0);
-    minimum_raw_sample = INT32_MAX;
-    maximum_raw_sample = INT32_MIN;
-    output_decimation = OUTPUT_DECIMATION[sample_rate_idx];
-    decimation_phase = 0;
-    decimation_sum = 0.0f;
-    sample_period_us = static_cast<uint32_t>(
-        1000000.0f /
-        (sample_rates.true_sample_rates[sample_rate_idx] * output_decimation));
-
-    if (!afe.setDataRate(rate_selector) || !afe.startStreaming()) {
-        LOG_ERR("Failed to start AFE1594 streaming");
+    if (active_channel_count > 0U && sample_rate_idx != current_sample_rate_index) {
+        LOG_ERR("ExG %s requires the active shared sample-rate index %d",
+                name, current_sample_rate_index);
         return;
     }
 
-    _running = true;
-    k_timer_start(&poll_timer, K_NO_WAIT, K_MSEC(FIFO_POLL_INTERVAL_MS));
+    output_decimation = OUTPUT_DECIMATION[sample_rate_idx];
+    decimation_phase = 0;
+    decimation_sum = 0.0f;
+    hardware_sample_period_us = static_cast<uint32_t>(
+        1000000.0f /
+        (sample_rates.true_sample_rates[sample_rate_idx] * output_decimation));
+    minimum_raw_sample[channel_index] = INT32_MAX;
+    maximum_raw_sample[channel_index] = INT32_MIN;
 
-    LOG_INF("ExG sensor started at %.1f SPS (AFE %.1f SPS, decimation %u)",
-            (double)sample_rates.true_sample_rates[sample_rate_idx],
-            (double)(sample_rates.true_sample_rates[sample_rate_idx] * output_decimation),
-            output_decimation);
+    if (active_channel_count == 0U) {
+        atomic_set(&sample_count, 0);
+        if (!afe.setDataRate(sample_rates.reg_vals[sample_rate_idx]) ||
+            !afe.startStreaming()) {
+            LOG_ERR("Failed to start AFE1594 streaming");
+            return;
+        }
+        current_sample_rate_index = sample_rate_idx;
+        k_timer_start(&poll_timer, K_NO_WAIT, K_MSEC(FIFO_POLL_INTERVAL_MS));
+    }
+
+    _running = true;
+    active_channel_count++;
+    LOG_INF("ExG %s started at %.1f SPS", name,
+            (double)sample_rates.true_sample_rates[sample_rate_idx]);
 }
 
 void ExG::stop()
 {
-    if (!_active) {
+    _active = false;
+    if (!_running) {
         return;
     }
 
     _running = false;
+    if (active_channel_count > 0U) {
+        active_channel_count--;
+    }
+    if (active_channel_count > 0U) {
+        return;
+    }
+
     k_timer_stop(&poll_timer);
     struct k_work_sync sync;
-    k_work_cancel_sync(&sensor_work, &sync);
+    k_work_cancel_sync(&poll_work, &sync);
     afe.stopStreaming();
     pm_device_runtime_put(ls_1_8);
     pm_device_runtime_put(ls_3_3);
-    _active = false;
-    LOG_INF("ExG sensor stopped");
+    hardware_active = false;
+    current_sample_rate_index = -1;
+    LOG_INF("AFE1594 stopped");
 }
 
 static int cmd_exg_start(const struct shell *shell, size_t argc, char **argv)
@@ -257,7 +264,7 @@ static int cmd_exg_start(const struct shell *shell, size_t argc, char **argv)
         .storageOptions = DATA_STREAMING,
     };
     config_sensor(&config);
-    shell_print(shell, "AFE1594 start queued at %.0f Hz",
+    shell_print(shell, "AFE1594 Eartips start queued at %.0f Hz",
                 (double)ExG::sample_rates.true_sample_rates[rate_index]);
     return 0;
 }
@@ -273,7 +280,7 @@ static int cmd_exg_stop(const struct shell *shell, size_t argc, char **argv)
         .storageOptions = 0,
     };
     config_sensor(&config);
-    shell_print(shell, "AFE1594 stop queued");
+    shell_print(shell, "AFE1594 Eartips stop queued");
     return 0;
 }
 
@@ -283,17 +290,21 @@ static int cmd_exg_status(const struct shell *shell, size_t argc, char **argv)
     ARG_UNUSED(argv);
 
     shell_print(shell,
-                "running=%d samples=%ld raw=[%ld,%ld] last=%.3f uV id=0x%06x spi=%d",
-                ExG::sensor.is_running(), (long)atomic_get(&sample_count),
-                (long)minimum_raw_sample, (long)maximum_raw_sample,
-                (double)last_sample_microvolts,
+                "running=[%d,%d,%d,%d] samples=%ld last=[%.3f,%.3f,%.3f,%.3f] uV id=0x%06x spi=%d",
+                ExG::sensor.is_running(), ExG::sensor_3_4.is_running(),
+                ExG::sensor_5_6.is_running(), ExG::sensor_7_8.is_running(),
+                (long)atomic_get(&sample_count),
+                (double)last_sample_microvolts[0],
+                (double)last_sample_microvolts[1],
+                (double)last_sample_microvolts[2],
+                (double)last_sample_microvolts[3],
                 (unsigned int)ExG::last_design_id(), ExG::last_spi_error());
     return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(exg_cmd,
-    SHELL_CMD(start, NULL, "Start AFE1594 stream [rate index 0-6]", cmd_exg_start),
-    SHELL_CMD(stop, NULL, "Stop AFE1594 stream", cmd_exg_stop),
+    SHELL_CMD(start, NULL, "Start AFE1594 Eartips stream [rate index 0-6]", cmd_exg_start),
+    SHELL_CMD(stop, NULL, "Stop AFE1594 Eartips stream", cmd_exg_stop),
     SHELL_CMD(status, NULL, "Show AFE1594 stream status", cmd_exg_status),
     SHELL_SUBCMD_SET_END);
 

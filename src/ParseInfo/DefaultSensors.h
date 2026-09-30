@@ -25,8 +25,17 @@ SensorComponent exgComponents[EXG_COMPONENT_COUNT] = {
 };
 
 #define EXG_GROUP_COUNT 1
-SensorComponentGroup exgGroups[EXG_GROUP_COUNT] = {
-    { .name = "EXG", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+SensorComponentGroup exgEartipsGroups[EXG_GROUP_COUNT] = {
+    { .name = "ExG Eartips", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+};
+SensorComponentGroup exg34Groups[EXG_GROUP_COUNT] = {
+    { .name = "ExG 3_4", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+};
+SensorComponentGroup exg56Groups[EXG_GROUP_COUNT] = {
+    { .name = "ExG 5_6", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+};
+SensorComponentGroup exg78Groups[EXG_GROUP_COUNT] = {
+    { .name = "ExG 7_8", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
 };
 
 // ============= Microphones =============
@@ -142,25 +151,19 @@ SensorComponentGroup opticTemperatureLeftGroups[OPTIC_TEMP_LEFT_GROUP_COUNT] = {
 
 // ============= Baro =============
 
-#define BARO_TEMP_COUNT 1
-SensorComponent baroTempComponents[BARO_TEMP_COUNT] = {
-    { .name = "Temperature", .unit = "°C", .parseType = PARSE_TYPE_FLOAT },
-};
-
 #define BARO_PRESSURE_COUNT 1
 SensorComponent baroPressureComponents[BARO_PRESSURE_COUNT] = {
     { .name = "Pressure", .unit = "kPa", .parseType = PARSE_TYPE_FLOAT },
 };
 
-#define BARO_GROUP_COUNT 2
+#define BARO_GROUP_COUNT 1
 SensorComponentGroup baroGroups[BARO_GROUP_COUNT] = {
-    { .name = "TEMPERATURE_SENSOR", .componentCount = BARO_TEMP_COUNT, .components = baroTempComponents },
     { .name = "BAROMETER", .componentCount = BARO_PRESSURE_COUNT, .components = baroPressureComponents },
 };
 
 // ============= Sensors =============
 
-#define SENSOR_COUNT 9
+#define SENSOR_COUNT 13
 SensorScheme defaultSensors[SENSOR_COUNT] = {
     {
         .name = "9-Axis IMU",
@@ -253,8 +256,23 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "Ear Canal Pressure Sensor",
-        .id = ID_TEMP_BARO,
+        .name = "Ear Canal Pressure Sensor Right",
+        .id = ID_TEMP_BARO_RIGHT,
+        .groupCount = BARO_GROUP_COUNT,
+        .groups = baroGroups,
+        .configOptions = {
+            .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
+            .frequencyOptions = {
+                .frequencyCount = sizeof(Baro::sample_rates.reg_vals),
+                .defaultFrequencyIndex = 12,
+                .maxBleFrequencyIndex = 17,
+                .frequencies = Baro::sample_rates.sample_rates,
+            },
+        },
+    },
+    {
+        .name = "Ear Canal Pressure Sensor Left",
+        .id = ID_TEMP_BARO_LEFT,
         .groupCount = BARO_GROUP_COUNT,
         .groups = baroGroups,
         .configOptions = {
@@ -283,10 +301,55 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         }, 
     },
     {
-        .name = "ExG Sensor",
+        .name = "ExG Eartips",
         .id = ID_EXG,
         .groupCount = EXG_GROUP_COUNT,
-        .groups = exgGroups,
+        .groups = exgEartipsGroups,
+        .configOptions = {
+            .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
+            .frequencyOptions = {
+                .frequencyCount = ARRAY_SIZE(ExG::sample_rates.reg_vals),
+                .defaultFrequencyIndex = 0,
+                .maxBleFrequencyIndex = ARRAY_SIZE(ExG::sample_rates.reg_vals) - 1,
+                .frequencies = ExG::sample_rates.sample_rates,
+            },
+        },
+    },
+    {
+        .name = "ExG 3_4",
+        .id = ID_EXG_3_4,
+        .groupCount = EXG_GROUP_COUNT,
+        .groups = exg34Groups,
+        .configOptions = {
+            .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
+            .frequencyOptions = {
+                .frequencyCount = ARRAY_SIZE(ExG::sample_rates.reg_vals),
+                .defaultFrequencyIndex = 0,
+                .maxBleFrequencyIndex = ARRAY_SIZE(ExG::sample_rates.reg_vals) - 1,
+                .frequencies = ExG::sample_rates.sample_rates,
+            },
+        },
+    },
+    {
+        .name = "ExG 5_6",
+        .id = ID_EXG_5_6,
+        .groupCount = EXG_GROUP_COUNT,
+        .groups = exg56Groups,
+        .configOptions = {
+            .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
+            .frequencyOptions = {
+                .frequencyCount = ARRAY_SIZE(ExG::sample_rates.reg_vals),
+                .defaultFrequencyIndex = 0,
+                .maxBleFrequencyIndex = ARRAY_SIZE(ExG::sample_rates.reg_vals) - 1,
+                .frequencies = ExG::sample_rates.sample_rates,
+            },
+        },
+    },
+    {
+        .name = "ExG 7_8",
+        .id = ID_EXG_7_8,
+        .groupCount = EXG_GROUP_COUNT,
+        .groups = exg78Groups,
         .configOptions = {
             .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
             .frequencyOptions = {
@@ -301,7 +364,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
 
 ParseInfoScheme defaultSensorIds = {
     .sensorCount = SENSOR_COUNT,
-    .sensorIds = (uint8_t[]){ ID_IMU, ID_PPG_right_I2C2, ID_PPG_left_I2C3, ID_OPTTEMP_right_I2C2, ID_OPTTEMP_left_I2C3, ID_TEMP_BARO, ID_BONE_CONDUCTION, ID_MICRO, ID_EXG },
+    .sensorIds = (uint8_t[]){ ID_IMU, ID_PPG_right_I2C2, ID_PPG_left_I2C3, ID_OPTTEMP_right_I2C2, ID_OPTTEMP_left_I2C3, ID_TEMP_BARO_RIGHT, ID_TEMP_BARO_LEFT, ID_BONE_CONDUCTION, ID_MICRO, ID_EXG, ID_EXG_3_4, ID_EXG_5_6, ID_EXG_7_8 },
 };
 
 #endif // _DEFAULT_SENSORS_H

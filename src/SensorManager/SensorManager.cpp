@@ -190,7 +190,8 @@ void stop_sensor_manager() {
 	//extern "C" void audio_datapath_stop_recording(void);
 	audio_datapath_stop_recording();
 
-    Baro::sensor.stop();
+	Baro::right.stop();
+	Baro::left.stop();
 	IMU::sensor.stop();
 	PPG_right_I2C2::sensor.stop();
 	PPG_left_I2C3::sensor.stop();
@@ -199,6 +200,9 @@ void stop_sensor_manager() {
 	BoneConduction::sensor.stop();
 	Microphone::sensor.stop();
 	ExG::sensor.stop();
+	ExG::sensor_3_4.stop();
+	ExG::sensor_5_6.stop();
+	ExG::sensor_7_8.stop();
 
 	active_sensors = 0;
 	ble_sensors.clear();
@@ -227,8 +231,10 @@ EdgeMlSensor * get_sensor(enum sensor_id id) {
 	switch (id) {
 	case ID_IMU:
 		return &(IMU::sensor);
-	case ID_TEMP_BARO:
-		return &(Baro::sensor);
+	case ID_TEMP_BARO_RIGHT:
+		return &(Baro::right);
+	case ID_TEMP_BARO_LEFT:
+		return &(Baro::left);
 	case ID_PPG_right_I2C2:
 		return &(PPG_right_I2C2::sensor);
 	case ID_PPG_left_I2C3:
@@ -243,6 +249,12 @@ EdgeMlSensor * get_sensor(enum sensor_id id) {
 		return &(Microphone::sensor);
 	case ID_EXG:
 		return &(ExG::sensor);
+	case ID_EXG_3_4:
+		return &(ExG::sensor_3_4);
+	case ID_EXG_5_6:
+		return &(ExG::sensor_5_6);
+	case ID_EXG_7_8:
+		return &(ExG::sensor_7_8);
 	default:
 		return NULL;
 	}

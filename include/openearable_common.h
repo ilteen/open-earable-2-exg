@@ -86,14 +86,18 @@ struct earable_state {
 
 enum sensor_id {
 	ID_IMU=0,
-	ID_TEMP_BARO=1,
+	ID_TEMP_BARO_RIGHT=1,
 	ID_MICRO=2,
+	ID_TEMP_BARO_LEFT=3,
 	ID_PPG_right_I2C2=4,
 	ID_PPG_left_I2C3=5,
 	ID_BONE_CONDUCTION=6,
 	ID_OPTTEMP_right_I2C2=7,
 	ID_OPTTEMP_left_I2C3=8,
 	ID_EXG=9,
+	ID_EXG_3_4=10,
+	ID_EXG_5_6=11,
+	ID_EXG_7_8=12,
 };
 
 struct battery_data {

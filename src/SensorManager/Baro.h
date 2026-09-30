@@ -8,9 +8,19 @@
 
 #include "BMP388/Adafruit_BMP3XX.h"
 
+struct BaroConfig {
+    TWIM *i2c_dev;
+    uint8_t i2c_addr;
+    uint8_t sensor_id;
+    const char *name;
+};
+
 class Baro : public EdgeMlSensor {
 public:
-    static Baro sensor;
+    explicit Baro(const BaroConfig& config);
+
+    static Baro right;
+    static Baro left;
 
     bool init(struct k_msgq * queue) override;
     void start(int sample_rate_idx) override;
@@ -18,13 +28,19 @@ public:
 
     const static SampleRateSetting<18> sample_rates;
 private:
-    static Adafruit_BMP3XX bmp;
+    Adafruit_BMP3XX bmp;
+    const BaroConfig& config;
+    struct sensor_msg msg_baro;
+    int initial_discard = 1;
 
     bool _active = false;
 
-    static void update_sensor(struct k_work *work);
+    void do_update_sensor();
 
-    static void sensor_timer_handler(struct k_timer *dummy);
+    static void update_right(struct k_work *work);
+    static void update_left(struct k_work *work);
+    static void right_timer_handler(struct k_timer *dummy);
+    static void left_timer_handler(struct k_timer *dummy);
 };
 
 #endif

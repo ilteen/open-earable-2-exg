@@ -18,6 +18,8 @@ constexpr uint16_t PROG_RLD_REG1 = 0x047;
 constexpr uint16_t PROG_RLD_REG2 = 0x048;
 constexpr uint16_t INA_ECG_CH1 = 0x0C3;
 constexpr uint16_t INA_ECG_CH2 = 0x0C4;
+constexpr uint16_t INA_ECG_CH3 = 0x0C5;
+constexpr uint16_t INA_ECG_CH4 = 0x0C6;
 constexpr uint16_t PROG_ECG_DIG = 0x0CB;
 constexpr uint16_t PROG_RBIAS_DC_LOD = 0x100;
 constexpr uint16_t SEL_RBIAS_CONN = 0x101;
@@ -37,13 +39,14 @@ constexpr uint32_t RESET_FIRST_SYNC = 1UL << 21;
 constexpr uint32_t GENERATE_SYNC = 1UL << 1;
 constexpr uint32_t ENABLE_ECG_CH1 = 1UL << 0;
 constexpr uint32_t ENABLE_ECG_CH2 = 1UL << 1;
+constexpr uint32_t ENABLE_ECG_CH3 = 1UL << 2;
+constexpr uint32_t ENABLE_ECG_CH4 = 1UL << 3;
 constexpr uint32_t ENABLE_RLD_AMP = 1UL << 6;
 constexpr uint32_t ENABLE_SHIELD_DRIVER = 1UL << 5;
 constexpr uint32_t ENABLE_CM_IN = 1UL << 4;
 constexpr uint32_t ENABLE_ECG_2CH_AVG = 1UL << 23;
 constexpr uint32_t ECG_DATA_RATE_MASK = 0x0FUL << 4;
 constexpr uint32_t ENABLE_MAIN_FIFO = 1UL << 0;
-constexpr uint32_t MASK_ECG_CH2_TO_CH4 = (1UL << 3) | (1UL << 4) | (1UL << 5);
 } // namespace bit
 
 namespace rld {
@@ -124,42 +127,47 @@ bool AFE1594::begin(uint8_t chip_address, const BusPins &pins)
     return true;
 }
 
-bool AFE1594::configureAveragedChannels(ChannelGain gain)
+bool AFE1594::configureDifferentialChannels(ChannelGain gain)
 {
-    const uint32_t channel_1 =
-        (static_cast<uint32_t>(gain) << 8) |
-        (static_cast<uint32_t>(ChannelInput::E1) << 4) |
-        static_cast<uint32_t>(ChannelInput::E3);
-    const uint32_t channel_2 =
-        (static_cast<uint32_t>(gain) << 8) |
-        (static_cast<uint32_t>(ChannelInput::E2) << 4) |
-        static_cast<uint32_t>(ChannelInput::E4);
-    const uint32_t channel_enable = bit::ENABLE_ECG_CH1 | bit::ENABLE_ECG_CH2;
+    const uint32_t channels[ECG_CHANNEL_COUNT] = {
+        (static_cast<uint32_t>(gain) << 8) | 0x12U,
+        (static_cast<uint32_t>(gain) << 8) | 0x34U,
+        (static_cast<uint32_t>(gain) << 8) | 0x56U,
+        (static_cast<uint32_t>(gain) << 8) | 0x78U,
+    };
+    const uint16_t registers[ECG_CHANNEL_COUNT] = {
+        reg::INA_ECG_CH1, reg::INA_ECG_CH2, reg::INA_ECG_CH3, reg::INA_ECG_CH4,
+    };
+    const uint32_t channel_enable = bit::ENABLE_ECG_CH1 | bit::ENABLE_ECG_CH2 |
+                                    bit::ENABLE_ECG_CH3 | bit::ENABLE_ECG_CH4;
 
-    if (!writeRegister(reg::INA_ECG_CH1, channel_1) ||
-        !writeRegister(reg::INA_ECG_CH2, channel_2) ||
-        !updateRegister(reg::ENABLE_CONTROLS_REG2, channel_enable,
-                        channel_enable) ||
-        !updateRegister(reg::PROG_ECG_DIG, bit::ENABLE_ECG_2CH_AVG,
-                        bit::ENABLE_ECG_2CH_AVG) ||
+    for (size_t i = 0; i < ECG_CHANNEL_COUNT; ++i) {
+        if (!writeRegister(registers[i], channels[i])) {
+            return false;
+        }
+    }
+    if (!updateRegister(reg::ENABLE_CONTROLS_REG2, channel_enable, channel_enable) ||
+        !updateRegister(reg::PROG_ECG_DIG, bit::ENABLE_ECG_2CH_AVG, 0) ||
         !configureMainFifo()) {
         return false;
     }
 
-    const uint32_t read_channel_1 = readRegister(reg::INA_ECG_CH1);
-    const uint32_t read_channel_2 = readRegister(reg::INA_ECG_CH2);
+    for (size_t i = 0; i < ECG_CHANNEL_COUNT; ++i) {
+        if (readRegister(registers[i]) != channels[i]) {
+            LOG_ERR("ECG channel %zu readback failed", i + 1U);
+            return false;
+        }
+    }
     const uint32_t read_enable = readRegister(reg::ENABLE_CONTROLS_REG2);
     const uint32_t read_digital = readRegister(reg::PROG_ECG_DIG);
-    if (read_channel_1 != channel_1 || read_channel_2 != channel_2 ||
-        (read_enable & channel_enable) != channel_enable ||
-        (read_digital & bit::ENABLE_ECG_2CH_AVG) == 0U) {
-        LOG_ERR("Two-channel average readback failed: ch1=0x%06x ch2=0x%06x en=0x%06x dig=0x%06x",
-                (unsigned int)read_channel_1, (unsigned int)read_channel_2,
+    if ((read_enable & channel_enable) != channel_enable ||
+        (read_digital & bit::ENABLE_ECG_2CH_AVG) != 0U) {
+        LOG_ERR("Four-channel readback failed: en=0x%06x dig=0x%06x",
                 (unsigned int)read_enable, (unsigned int)read_digital);
         return false;
     }
 
-    LOG_INF("ECG average enabled: CH1=E1-E3, CH2=E2-E4, gain %.2f; CH2 FIFO word masked",
+    LOG_INF("ECG channels: E1-E2, E3-E4, E5-E6, E7-E8; gain %.2f",
             (double)gainValue(gain));
     return true;
 }
@@ -259,12 +267,13 @@ bool AFE1594::stopStreaming()
            updateRegister(reg::PROG_MAIN_FIFO, bit::ENABLE_MAIN_FIFO, 0);
 }
 
-size_t AFE1594::readSamples(int32_t *samples, size_t capacity, bool *overflow)
+size_t AFE1594::readSampleFrames(int32_t (*frames)[ECG_CHANNEL_COUNT],
+                                size_t capacity, bool *overflow)
 {
     if (overflow != nullptr) {
         *overflow = false;
     }
-    if (!initialized_ || samples == nullptr || capacity == 0U) {
+    if (!initialized_ || frames == nullptr || capacity == 0U) {
         return 0;
     }
 
@@ -276,14 +285,15 @@ size_t AFE1594::readSamples(int32_t *samples, size_t capacity, bool *overflow)
         return 0;
     }
 
-    size_t count = pointer & FIFO_REGISTER_WORD_COUNT;
-    if (count > capacity) {
-        count = capacity;
+    size_t word_count = pointer & FIFO_REGISTER_WORD_COUNT;
+    if (word_count > capacity * ECG_CHANNEL_COUNT) {
+        word_count = capacity * ECG_CHANNEL_COUNT;
     }
-    if (count > MAX_FIFO_BURST_WORDS) {
-        count = MAX_FIFO_BURST_WORDS;
+    if (word_count > MAX_FIFO_BURST_WORDS) {
+        word_count = MAX_FIFO_BURST_WORDS;
     }
-    if (count == 0U) {
+    word_count -= word_count % ECG_CHANNEL_COUNT;
+    if (word_count == 0U) {
         return 0;
     }
 
@@ -300,7 +310,7 @@ size_t AFE1594::readSamples(int32_t *samples, size_t capacity, bool *overflow)
     const uint16_t address = addressWord(reg::MAIN_FIFO);
     tx[0] = static_cast<uint8_t>(address >> 8);
     tx[1] = static_cast<uint8_t>(address);
-    const size_t transfer_length = address_bytes + word_bytes * (count + 1U);
+    const size_t transfer_length = address_bytes + word_bytes * (word_count + 1U);
 
     select();
     const bool transfer_ok = transfer(tx, rx, transfer_length);
@@ -317,21 +327,21 @@ size_t AFE1594::readSamples(int32_t *samples, size_t capacity, bool *overflow)
         *overflow = true;
     }
     const size_t available = read_start & FIFO_READ_START_WORD_COUNT;
-    if ((read_start & FIFO_READ_START_EMPTY) != 0 || available < count) {
+    if ((read_start & FIFO_READ_START_EMPTY) != 0 || available < word_count) {
         LOG_WRN("AFE1594 FIFO read-start mismatch: requested=%zu available=%zu status=0x%06x",
-                count, available, (unsigned int)read_start);
+                word_count, available, (unsigned int)read_start);
         return 0;
     }
 
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < word_count; ++i) {
         const size_t offset = address_bytes + word_bytes * (i + 1U);
         const uint32_t raw =
             (static_cast<uint32_t>(rx[offset]) << 16) |
             (static_cast<uint32_t>(rx[offset + 1U]) << 8) |
             static_cast<uint32_t>(rx[offset + 2U]);
-        samples[i] = signExtend24(raw);
+        frames[i / ECG_CHANNEL_COUNT][i % ECG_CHANNEL_COUNT] = signExtend24(raw);
     }
-    return count;
+    return word_count / ECG_CHANNEL_COUNT;
 }
 
 uint8_t AFE1594::readDesignId()
@@ -532,9 +542,9 @@ bool AFE1594::reset()
 
 bool AFE1594::configureMainFifo()
 {
-    /* One channel word per frame; no tag, timestamp, pace, or RLD data. */
+    /* Four ECG words per frame; no tag, timestamp, pace, or RLD data. */
     return writeRegister(reg::PROG_MAIN_FIFO, 4UL << 4) &&
-           writeRegister(reg::FORMAT_MAIN_FIFO, bit::MASK_ECG_CH2_TO_CH4);
+           writeRegister(reg::FORMAT_MAIN_FIFO, 0);
 }
 
 bool AFE1594::triggerSync()

@@ -9,6 +9,8 @@
 
 class AFE1594 {
 public:
+    static constexpr size_t ECG_CHANNEL_COUNT = 4;
+
     enum class ChannelInput : uint8_t {
         RldRef = 0x00,
         E1 = 0x01,
@@ -49,11 +51,12 @@ public:
 
     bool begin(uint8_t chip_address, const BusPins &pins);
     bool configurePatientBias(PatientBiasMode mode);
-    bool configureAveragedChannels(ChannelGain gain);
+    bool configureDifferentialChannels(ChannelGain gain);
     bool setDataRate(uint8_t selector);
     bool startStreaming();
     bool stopStreaming();
-    size_t readSamples(int32_t *samples, size_t capacity, bool *overflow = nullptr);
+    size_t readSampleFrames(int32_t (*frames)[ECG_CHANNEL_COUNT], size_t capacity,
+                            bool *overflow = nullptr);
 
     uint8_t readDesignId();
     uint32_t lastDesignIdRead() const;

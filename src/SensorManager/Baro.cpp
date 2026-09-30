@@ -9,13 +9,24 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(BMP388);
 
-static struct sensor_msg msg_baro;
+static const BaroConfig right_config = {
+	.i2c_dev = &I2C3,
+	.i2c_addr = DT_REG_ADDR(DT_NODELABEL(bmp388)),
+	.sensor_id = ID_TEMP_BARO_RIGHT,
+	.name = "right",
+};
 
-Adafruit_BMP3XX Baro::bmp;
+static const BaroConfig left_config = {
+	.i2c_dev = &I2C2,
+	.i2c_addr = DT_REG_ADDR(DT_NODELABEL(bmp388_left)),
+	.sensor_id = ID_TEMP_BARO_LEFT,
+	.name = "left",
+};
 
-Baro Baro::sensor;
+Baro Baro::right(right_config);
+Baro Baro::left(left_config);
 
-static int baro_initial_discard = 1;
+Baro::Baro(const BaroConfig& config) : config(config) {}
 
 // Initialisierung der SampleRateSettings für Baro (BMP3)
 const SampleRateSetting<18> Baro::sample_rates = {
@@ -34,45 +45,52 @@ const SampleRateSetting<18> Baro::sample_rates = {
       100.0, 200.0 }   // true_sample_rates
 };
 
-void Baro::update_sensor(struct k_work *work) {
-	ARG_UNUSED(work);
-	int ret;
-
-	bmp.performReading();
-
-	if (baro_initial_discard > 0) {
-		baro_initial_discard--;
+void Baro::do_update_sensor() {
+	if (!bmp.performReading()) {
+		LOG_WRN("Failed to read BMP388 sensor (%s)", config.name);
 		return;
 	}
 
-	msg_baro.sd = sensor._sd_logging;
-	msg_baro.stream = sensor._ble_stream;
+	if (initial_discard > 0) {
+		initial_discard--;
+		return;
+	}
 
-	msg_baro.data.id = ID_TEMP_BARO;
-	msg_baro.data.size = 2 * sizeof(float);
+	msg_baro.sd = _sd_logging;
+	msg_baro.stream = _ble_stream;
+
+	msg_baro.data.id = config.sensor_id;
+	msg_baro.data.size = sizeof(float);
 	msg_baro.data.time = micros();
 
-	float data[2] = {
-		static_cast<float>(bmp.temperature),
-		static_cast<float>(bmp.pressure),
-	};
+	const float pressure = static_cast<float>(bmp.pressure);
+	memcpy(msg_baro.data.data, &pressure, sizeof(pressure));
 
-	memcpy(msg_baro.data.data, data, 2 * sizeof(float));
-
-	ret = k_msgq_put(sensor_queue, &msg_baro, K_NO_WAIT);
+	int ret = k_msgq_put(sensor_queue, &msg_baro, K_NO_WAIT);
 	if (ret) {
-		LOG_WRN("sensor msg queue full");
+		LOG_WRN("sensor msg queue full (%s)", config.name);
 	}
 }
 
-/**
-* @brief Submit a k_work on timer expiry.
-*/
-void Baro::sensor_timer_handler(struct k_timer *dummy)
-{
+void Baro::update_right(struct k_work *work) {
+	ARG_UNUSED(work);
+	right.do_update_sensor();
+}
+
+void Baro::update_left(struct k_work *work) {
+	ARG_UNUSED(work);
+	left.do_update_sensor();
+}
+
+void Baro::right_timer_handler(struct k_timer *dummy) {
 	ARG_UNUSED(dummy);
-	k_work_submit_to_queue(&sensor_work_q, &sensor.sensor_work);
-};
+	k_work_submit_to_queue(&sensor_work_q, &right.sensor_work);
+}
+
+void Baro::left_timer_handler(struct k_timer *dummy) {
+	ARG_UNUSED(dummy);
+	k_work_submit_to_queue(&sensor_work_q, &left.sensor_work);
+}
 
 bool Baro::init(struct k_msgq * queue) {
 	if (!_active) {
@@ -80,8 +98,8 @@ bool Baro::init(struct k_msgq * queue) {
     	_active = true;
 	}
 
-    if (!bmp.begin_I2C()) {   // hardware I2C mode, can pass in address & alt Wire
-		LOG_WRN("Could not find a valid BMP388 sensor, check wiring!");
+	if (!bmp.begin_I2C(config.i2c_addr, config.i2c_dev)) {
+		LOG_WRN("Could not find a valid BMP388 sensor (%s), check wiring!", config.name);
 		pm_device_runtime_put(ls_1_8);
 		_active = false;
 		return false;
@@ -89,21 +107,26 @@ bool Baro::init(struct k_msgq * queue) {
 
 	sensor_queue = queue;
 	
-	k_work_init(&sensor.sensor_work, update_sensor);
-	k_timer_init(&sensor.sensor_timer, sensor_timer_handler, NULL);
+	if (config.sensor_id == ID_TEMP_BARO_RIGHT) {
+		k_work_init(&sensor_work, update_right);
+		k_timer_init(&sensor_timer, right_timer_handler, NULL);
+	} else {
+		k_work_init(&sensor_work, update_left);
+		k_timer_init(&sensor_timer, left_timer_handler, NULL);
+	}
 
 	return true;
 }
 
 void Baro::start(int sample_rate_idx) {
-	baro_initial_discard = 1;
+	initial_discard = 1;
 
     k_timeout_t t = K_USEC(1000000.0f / sample_rates.true_sample_rates[sample_rate_idx]);
     
     //bmp.set_interrogation_rate(setting.reg_val);
     //bmp.start();
 
-	k_timer_start(&sensor.sensor_timer, K_NO_WAIT, t);
+	k_timer_start(&sensor_timer, K_NO_WAIT, t);
 
 	_running = true;
 }
@@ -114,7 +137,7 @@ void Baro::stop() {
 
 	_running = false;
 
-	k_timer_stop(&sensor.sensor_timer);
+	k_timer_stop(&sensor_timer);
 
     pm_device_runtime_put(ls_1_8);
 }

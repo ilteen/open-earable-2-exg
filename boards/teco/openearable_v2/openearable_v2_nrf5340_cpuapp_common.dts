@@ -150,6 +150,11 @@
         compatible = "i2c-device";
         reg = <0x3a>;
     };
+
+	bmp388_left: bmp388@76 {
+        compatible = "i2c-device";
+        reg = <0x76>;
+    };
  };
  
  &i2c3 {
