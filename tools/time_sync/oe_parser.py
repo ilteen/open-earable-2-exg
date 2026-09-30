@@ -10,39 +10,64 @@ import pandas as pd
 
 LABELS = {
     "imu": ['acc.x', 'acc.y', 'acc.z', 'gyro.x', 'gyro.y', 'gyro.z', 'mag.x', 'mag.y', 'mag.z'],
+    "pressure_right": ['pressure_right.pressure'],
+    "pressure_left": ['pressure_left.pressure'],
     "ppg_right": ['ppg_right.red', 'ppg_right.ir', 'ppg_right.green', 'ppg_right.ambient'],
     "ppg_left": ['ppg_left.red', 'ppg_left.ir', 'ppg_left.green', 'ppg_left.ambient'],
     "optical_temp_right": ['optical_temp_right.temperature'],
     "optical_temp_left": ['optical_temp_left.temperature'],
-    "exg": ['exg.voltage'],
+    "exg_eartips": ['exg_eartips.voltage'],
+    "exg_3_4": ['exg_3_4.voltage'],
+    "exg_5_6": ['exg_5_6.voltage'],
+    "exg_7_8": ['exg_7_8.voltage'],
 }
 
 SENSOR_SID = {
     "imu": 0,
-    "barometer": 1,
+    "pressure_right": 1,
     "microphone": 2,
+    "pressure_left": 3,
     "ppg_right": 4,
     "ppg_left": 5,
     "bone_acc": 6,
     "optical_temp_right": 7,
     "optical_temp_left": 8,
-    "exg": 9,
+    "exg_eartips": 9,
+    "exg_3_4": 10,
+    "exg_5_6": 11,
+    "exg_7_8": 12,
 }
 
 SID_SENSOR = {sid: name for name, sid in SENSOR_SID.items()}
 
 SENSOR_FORMATS = {
     SENSOR_SID["imu"]: '<9f',
-    SENSOR_SID["barometer"]: '<2f',
+    SENSOR_SID["pressure_right"]: '<f',
+    SENSOR_SID["pressure_left"]: '<f',
     SENSOR_SID["ppg_right"]: '<4I',
     SENSOR_SID["ppg_left"]: '<4I',
     SENSOR_SID["bone_acc"]: '<3h',
     SENSOR_SID["optical_temp_right"]: '<f',
     SENSOR_SID["optical_temp_left"]: '<f',
-    SENSOR_SID["exg"]: '<f',
+    SENSOR_SID["exg_eartips"]: '<f',
+    SENSOR_SID["exg_3_4"]: '<f',
+    SENSOR_SID["exg_5_6"]: '<f',
+    SENSOR_SID["exg_7_8"]: '<f',
 }
 
-ACTIVE_SENSORS = ["imu", "ppg_right", "ppg_left", "optical_temp_right", "optical_temp_left", "exg"]
+ACTIVE_SENSORS = [
+    "imu",
+    "pressure_right",
+    "pressure_left",
+    "ppg_right",
+    "ppg_left",
+    "optical_temp_right",
+    "optical_temp_left",
+    "exg_eartips",
+    "exg_3_4",
+    "exg_5_6",
+    "exg_7_8",
+]
 
 SENSOR_PACKET_HEADER_FORMAT = "<BBQ"
 SENSOR_PACKET_HEADER_SIZE = struct.calcsize(SENSOR_PACKET_HEADER_FORMAT)
