@@ -26,16 +26,16 @@ SensorComponent exgComponents[EXG_COMPONENT_COUNT] = {
 
 #define EXG_GROUP_COUNT 1
 SensorComponentGroup exgEartipsGroups[EXG_GROUP_COUNT] = {
-    { .name = "ExG Eartips", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+    { .name = "ExG Fp3-M1", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
 };
 SensorComponentGroup exg34Groups[EXG_GROUP_COUNT] = {
-    { .name = "ExG 3_4", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+    { .name = "ExG Fp4-M2", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
 };
 SensorComponentGroup exg56Groups[EXG_GROUP_COUNT] = {
-    { .name = "ExG 5_6", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+    { .name = "ExG M2-M1", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
 };
 SensorComponentGroup exg78Groups[EXG_GROUP_COUNT] = {
-    { .name = "ExG 7_8", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
+    { .name = "ExG Bio2-Bio1", .componentCount = EXG_COMPONENT_COUNT, .components = exgComponents },
 };
 
 // ============= Microphones =============
@@ -301,7 +301,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         }, 
     },
     {
-        .name = "ExG Eartips",
+        .name = "ExG Fp3-M1",
         .id = ID_EXG,
         .groupCount = EXG_GROUP_COUNT,
         .groups = exgEartipsGroups,
@@ -316,7 +316,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "ExG 3_4",
+        .name = "ExG Fp4-M2",
         .id = ID_EXG_3_4,
         .groupCount = EXG_GROUP_COUNT,
         .groups = exg34Groups,
@@ -331,7 +331,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "ExG 5_6",
+        .name = "ExG M2-M1",
         .id = ID_EXG_5_6,
         .groupCount = EXG_GROUP_COUNT,
         .groups = exg56Groups,
@@ -346,7 +346,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         },
     },
     {
-        .name = "ExG 7_8",
+        .name = "ExG Bio2-Bio1",
         .id = ID_EXG_7_8,
         .groupCount = EXG_GROUP_COUNT,
         .groups = exg78Groups,

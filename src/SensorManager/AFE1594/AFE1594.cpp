@@ -130,10 +130,10 @@ bool AFE1594::begin(uint8_t chip_address, const BusPins &pins)
 bool AFE1594::configureDifferentialChannels(ChannelGain gain)
 {
     const uint32_t channels[ECG_CHANNEL_COUNT] = {
-        (static_cast<uint32_t>(gain) << 8) | 0x12U,
-        (static_cast<uint32_t>(gain) << 8) | 0x34U,
-        (static_cast<uint32_t>(gain) << 8) | 0x56U,
-        (static_cast<uint32_t>(gain) << 8) | 0x78U,
+        (static_cast<uint32_t>(gain) << 8) | 0x53U,
+        (static_cast<uint32_t>(gain) << 8) | 0x64U,
+        (static_cast<uint32_t>(gain) << 8) | 0x43U,
+        (static_cast<uint32_t>(gain) << 8) | 0x87U,
     };
     const uint16_t registers[ECG_CHANNEL_COUNT] = {
         reg::INA_ECG_CH1, reg::INA_ECG_CH2, reg::INA_ECG_CH3, reg::INA_ECG_CH4,
@@ -167,7 +167,7 @@ bool AFE1594::configureDifferentialChannels(ChannelGain gain)
         return false;
     }
 
-    LOG_INF("ECG channels: E1-E2, E3-E4, E5-E6, E7-E8; gain %.2f",
+    LOG_INF("ECG channels: Fp3-M1 (E5-E3), Fp4-M2 (E6-E4), M2-M1 (E4-E3), Bio2-Bio1 (E8-E7); gain %.2f",
             (double)gainValue(gain));
     return true;
 }

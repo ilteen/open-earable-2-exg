@@ -29,10 +29,10 @@ int32_t minimum_raw_sample[AFE1594::ECG_CHANNEL_COUNT];
 int32_t maximum_raw_sample[AFE1594::ECG_CHANNEL_COUNT];
 } // namespace
 
-ExG ExG::sensor(0, ID_EXG, "Eartips");
-ExG ExG::sensor_3_4(1, ID_EXG_3_4, "3_4");
-ExG ExG::sensor_5_6(2, ID_EXG_5_6, "5_6");
-ExG ExG::sensor_7_8(3, ID_EXG_7_8, "7_8");
+ExG ExG::sensor(0, ID_EXG, "Fp3-M1");
+ExG ExG::sensor_3_4(1, ID_EXG_3_4, "Fp4-M2");
+ExG ExG::sensor_5_6(2, ID_EXG_5_6, "M2-M1");
+ExG ExG::sensor_7_8(3, ID_EXG_7_8, "Bio2-Bio1");
 ExG *ExG::channels[AFE1594::ECG_CHANNEL_COUNT] = {
     &sensor, &sensor_3_4, &sensor_5_6, &sensor_7_8,
 };
@@ -264,7 +264,7 @@ static int cmd_exg_start(const struct shell *shell, size_t argc, char **argv)
         .storageOptions = DATA_STREAMING,
     };
     config_sensor(&config);
-    shell_print(shell, "AFE1594 Eartips start queued at %.0f Hz",
+    shell_print(shell, "AFE1594 Fp3-M1 start queued at %.0f Hz",
                 (double)ExG::sample_rates.true_sample_rates[rate_index]);
     return 0;
 }
@@ -280,7 +280,7 @@ static int cmd_exg_stop(const struct shell *shell, size_t argc, char **argv)
         .storageOptions = 0,
     };
     config_sensor(&config);
-    shell_print(shell, "AFE1594 Eartips stop queued");
+    shell_print(shell, "AFE1594 Fp3-M1 stop queued");
     return 0;
 }
 
@@ -303,8 +303,8 @@ static int cmd_exg_status(const struct shell *shell, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(exg_cmd,
-    SHELL_CMD(start, NULL, "Start AFE1594 Eartips stream [rate index 0-6]", cmd_exg_start),
-    SHELL_CMD(stop, NULL, "Stop AFE1594 Eartips stream", cmd_exg_stop),
+    SHELL_CMD(start, NULL, "Start AFE1594 Fp3-M1 stream [rate index 0-6]", cmd_exg_start),
+    SHELL_CMD(stop, NULL, "Stop AFE1594 Fp3-M1 stream", cmd_exg_stop),
     SHELL_CMD(status, NULL, "Show AFE1594 stream status", cmd_exg_status),
     SHELL_SUBCMD_SET_END);
 
